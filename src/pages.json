@@ -1,0 +1,23 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+              "navigationBarTitleText": "HexTechBilliards"
+      }
+    },
+    {
+      "path": "pages/pvp/index",
+      "style": {
+        "navigationBarTitleText": "真人对战",
+        "navigationStyle": "custom"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+        "navigationBarTitleText": "HexTechBilliards",
+    "navigationBarBackgroundColor": "#1a1a2e",
+    "backgroundColor": "#1a1a2e"
+  }
+}
