@@ -6,6 +6,8 @@ import { PhysicsWorld } from '../engine/physics/PhysicsWorld'
 import { RuleEngine } from '../engine/game/RuleEngine'
 import { TABLE_WIDTH, TABLE_HEIGHT } from '../engine/physics/TableSpec'
 import { GamePhase as GP, BallGroup as BG, type Player as PlayerType, type TurnResult } from '../engine/game/GameState'
+import { getNetworkManager } from '../network/NetworkManager'
+import type { GameMessage, NetworkEvent } from '../network/types'
 
 /**
  * 中式八球初始球位
@@ -61,6 +63,24 @@ function createInitialBalls(): Ball[] {
   return balls
 }
 
+/**
+ * 计算球局状态的校验和（用于检测两个客户端的物理是否漂移）
+ */
+function computeChecksum(balls: Ball[]): string {
+  const data = balls
+    .filter(b => b.active || b.state === BallState.PLACING)
+    .map(b => `${b.number}:${b.position.x.toFixed(4)},${b.position.y.toFixed(4)}:${b.state}`)
+    .sort()
+    .join('|')
+  // 简单哈希 — 不需要加密级别
+  let hash = 0
+  for (let i = 0; i < data.length; i++) {
+    const ch = data.charCodeAt(i)
+    hash = ((hash << 5) - hash + ch) | 0
+  }
+  return hash.toString(36)
+}
+
 export const useGameStore = defineStore('game', () => {
   // === 核心引擎 ===
   const physicsWorld = new PhysicsWorld()
@@ -88,9 +108,24 @@ export const useGameStore = defineStore('game', () => {
   const aimAngle = ref(0)
   const shotPower = ref(0)
 
+  // === 在线模式 ===
+  const isOnlineMode = ref(false)
+  const myPlayerIndex = ref(-1)  // 在线时我在房间的位置（0或1）
+  const networkStatus = ref<'connected' | 'disconnected' | 'reconnecting'>('disconnected')
+
+  // 网络管理器引用
+  let networkManager: ReturnType<typeof getNetworkManager> | null = null
+  let networkEventHandler: ((event: NetworkEvent) => void) | null = null
+
   // 当前玩家
   const currentPlayer = () => players.value[currentPlayerIndex.value]
   const otherPlayer = () => players.value[1 - currentPlayerIndex.value]
+
+  /** 是否是我的回合（在线模式下只有轮到我才能操作） */
+  const isMyTurn = () => {
+    if (!isOnlineMode.value) return true
+    return currentPlayerIndex.value === myPlayerIndex.value
+  }
 
   /** 初始化/重新开始游戏 */
   function initGame(): void {
@@ -111,8 +146,108 @@ export const useGameStore = defineStore('game', () => {
     foulMessage.value = null
   }
 
-  /** 击球 */
+  /**
+   * 初始化在线模式
+   * @param myIndex 我在房间中的玩家编号（0或1）
+   */
+  function initOnlineMode(myIndex: number): void {
+    isOnlineMode.value = true
+    myPlayerIndex.value = myIndex
+
+    // 绑定网络事件
+    networkManager = getNetworkManager()
+    networkEventHandler = handleNetworkEvent
+    networkManager.onEvent(networkEventHandler)
+
+    // 初始化游戏
+    initGame()
+  }
+
+  /** 离开在线模式 */
+  function leaveOnlineMode(): void {
+    if (networkManager && networkEventHandler) {
+      networkManager.offEvent(networkEventHandler)
+      networkEventHandler = null
+    }
+    isOnlineMode.value = false
+    myPlayerIndex.value = -1
+  }
+
+  /** 处理网络事件 */
+  function handleNetworkEvent(event: NetworkEvent): void {
+    switch (event.type) {
+      case 'connection_state':
+        if (event.state === 'connected') {
+          networkStatus.value = 'connected'
+        } else if (event.state === 'reconnecting') {
+          networkStatus.value = 'reconnecting'
+        } else {
+          networkStatus.value = 'disconnected'
+        }
+        break
+
+      case 'game_message':
+        handleGameMessage(event.message)
+        break
+    }
+  }
+
+  /** 处理收到的游戏消息（来自对手） */
+  function handleGameMessage(msg: GameMessage): void {
+    switch (msg.type) {
+      case 'shoot':
+        // 对手击球 — 用相同参数在本地执行物理
+        localShoot(msg.power, msg.angle)
+        break
+
+      case 'place_cue_ball':
+        // 对手放置白球
+        localPlaceCueBall(new Vector2(msg.position.x, msg.position.y))
+        break
+
+      case 'state_checksum':
+        // 校验和比对
+        const localChecksum = computeChecksum(physicsWorld.balls)
+        if (localChecksum !== msg.checksum) {
+          console.warn(`[Online] State drift detected at turn ${msg.turnCount}: local=${localChecksum}, remote=${msg.checksum}`)
+          // TODO: 状态纠正逻辑（以房主状态为准）
+        }
+        break
+
+      case 'game_ready':
+        console.log('[Online] Opponent game ready')
+        break
+
+      case 'rematch_request':
+        // TODO: 再来一局请求
+        break
+
+      case 'rematch_accept':
+        // TODO: 再来一局确认
+        break
+    }
+  }
+
+  /** 击球（统一入口） */
   function shoot(power: number, angle: number): void {
+    // 在线模式下，只有轮到我才能击球
+    if (isOnlineMode.value && !isMyTurn()) return
+
+    if (isOnlineMode.value) {
+      // 在线模式：先发送给对手，再本地执行
+      networkManager?.sendGameMessage({
+        type: 'shoot',
+        power,
+        angle,
+        timestamp: Date.now(),
+      })
+    }
+
+    localShoot(power, angle)
+  }
+
+  /** 本地执行击球 */
+  function localShoot(power: number, angle: number): void {
     const cueBall = physicsWorld.balls.find(b => b.isCue && b.active)
     if (!cueBall) return
 
@@ -223,13 +358,41 @@ export const useGameStore = defineStore('game', () => {
     turnCount.value++
     phase.value = GP.AIMING
 
+    // 在线模式：回合结束时发送校验和
+    if (isOnlineMode.value) {
+      const checksum = computeChecksum(physicsWorld.balls)
+      networkManager?.sendGameMessage({
+        type: 'state_checksum',
+        checksum,
+        turnCount: turnCount.value,
+      })
+    }
+
     // 清除回合数据
     firstHitBallThisTurn.value = null
     pocketedThisTurn.value = []
   }
 
-  /** 放置自由球 */
+  /** 放置自由球（统一入口） */
   function placeCueBall(position: Vector2): boolean {
+    // 在线模式下，只有轮到我才能放置
+    if (isOnlineMode.value && !isMyTurn()) return false
+
+    const success = localPlaceCueBall(position)
+
+    if (success && isOnlineMode.value) {
+      // 在线模式：发送给对手
+      networkManager?.sendGameMessage({
+        type: 'place_cue_ball',
+        position: { x: position.x, y: position.y },
+      })
+    }
+
+    return success
+  }
+
+  /** 本地放置白球 */
+  function localPlaceCueBall(position: Vector2): boolean {
     const cueBall = physicsWorld.balls.find(b => b.isCue)
     if (!cueBall) return false
 
@@ -249,11 +412,15 @@ export const useGameStore = defineStore('game', () => {
     phase, players, currentPlayerIndex, turnCount,
     groupsAssigned, winner, winReason,
     foulMessage, aimAngle, shotPower,
+    // 在线模式状态
+    isOnlineMode, myPlayerIndex, networkStatus,
     // 引擎
     physicsWorld, ruleEngine,
     // 方法
     initGame, shoot, update, placeCueBall,
     currentPlayer, otherPlayer,
     firstHitBallThisTurn,
+    // 在线模式方法
+    initOnlineMode, leaveOnlineMode, isMyTurn,
   }
 })

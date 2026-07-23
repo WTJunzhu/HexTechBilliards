@@ -1,0 +1,20 @@
+{
+  "name": "hextech-billiards-server",
+  "version": "1.0.0",
+  "description": "HexTechBilliards signaling server for online multiplayer",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.14",
+    "@types/uuid": "^9.0.8",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

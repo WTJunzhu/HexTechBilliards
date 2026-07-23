@@ -1,5 +1,5 @@
 {
-  "name": "hextech-table-tennis",
+  "name": "hextech-billiards",
   "version": "0.1.0",
   "scripts": {
     "dev:custom": "uni -p",

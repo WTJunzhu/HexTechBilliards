@@ -6,10 +6,16 @@
     </view>
 
     <view class="mode-buttons">
-      <view class="mode-btn pvp-btn" @tap="startPvP">
+      <view class="mode-btn online-btn" @tap="startOnline">
+        <text class="mode-icon">🌐</text>
+        <text class="mode-name">在线对战</text>
+        <text class="mode-desc">远程联机 · 创建/加入房间</text>
+      </view>
+
+      <view class="mode-btn pvp-btn" @tap="startLocalPvP">
         <text class="mode-icon">⚔️</text>
-        <text class="mode-name">真人对战</text>
-        <text class="mode-desc">双人本地对战 + 海克斯</text>
+        <text class="mode-name">本地对战</text>
+        <text class="mode-desc">双人同屏 · 传递手机</text>
       </view>
 
       <view class="mode-btn boss-btn" @tap="comingSoon">
@@ -20,13 +26,17 @@
     </view>
 
     <view class="footer">
-      <text class="footer-text">Phase 1 MVP · 中式八球</text>
+      <text class="footer-text">Phase 1 MVP · 中式八球 · 在线联机</text>
     </view>
   </view>
 </template>
 
 <script setup lang="ts">
-function startPvP() {
+function startOnline() {
+  uni.navigateTo({ url: '/pages/lobby/index' })
+}
+
+function startLocalPvP() {
   uni.navigateTo({ url: '/pages/pvp/index' })
 }
 
@@ -85,6 +95,16 @@ function comingSoon() {
   padding: 40rpx;
   border-radius: 20rpx;
   transition: all 0.3s;
+}
+
+.online-btn {
+  background: linear-gradient(135deg, #0a3d2a 0%, #1b5e20 100%);
+  border: 2rpx solid rgba(100, 255, 150, 0.3);
+}
+
+.online-btn:active {
+  transform: scale(0.98);
+  background: linear-gradient(135deg, #0d4a30 0%, #2e7d32 100%);
 }
 
 .pvp-btn {

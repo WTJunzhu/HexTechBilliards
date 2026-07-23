@@ -8,13 +8,19 @@
           {{ players[0].group === 'solid' ? '全色球' : '花色球' }}
         </text>
         <text class="player-score">{{ players[0].pocketedCount }}/7</text>
+        <text class="player-you" v-if="isOnlineMode && myPlayerIndex === 0">你</text>
       </view>
 
       <view class="turn-info">
         <text class="turn-text" v-if="foulMessage" style="color: #ff6b6b;">{{ foulMessage }}</text>
-        <text class="turn-text" v-else-if="phase === 'ball_in_hand'" style="color: #ffd93d;">请放置白球</text>
+        <text class="turn-text" v-else-if="phase === 'ball_in_hand'" style="color: #ffd93d;">
+          {{ isMyTurnInOnline ? '请放置白球' : '对手放置白球...' }}
+        </text>
         <text class="turn-text" v-else-if="phase === 'game_over'" style="color: #6bcb77;">
           {{ winner !== null ? players[winner].name + ' 获胜!' : '' }}
+        </text>
+        <text class="turn-text" v-else-if="isOnlineMode && !isMyTurnInOnline" style="color: #8888aa;">
+          等待对手击球...
         </text>
         <text class="turn-text" v-else>
           {{ players[currentPlayerIndex].name }} 的回合
@@ -28,7 +34,14 @@
           {{ players[1].group === 'solid' ? '全色球' : '花色球' }}
         </text>
         <text class="player-score">{{ players[1].pocketedCount }}/7</text>
+        <text class="player-you" v-if="isOnlineMode && myPlayerIndex === 1">你</text>
       </view>
+    </view>
+
+    <!-- 在线状态条 -->
+    <view class="online-status-bar" v-if="isOnlineMode">
+      <text class="online-dot" :class="networkStatus"></text>
+      <text class="online-status-text">{{ networkStatusText }}</text>
     </view>
 
     <!-- Canvas 游戏区域 - 使用普通div容器 + 纯DOM canvas -->
@@ -37,7 +50,7 @@
     </view>
 
     <!-- 力度条 -->
-    <view class="power-bar-container" v-if="phase === 'aiming' || phase === 'break_shot'">
+    <view class="power-bar-container" v-if="canAim && (phase === 'aiming' || phase === 'break_shot')">
       <view class="power-bar-bg">
         <view class="power-bar-fill" :style="{ width: powerPercent + '%' }"></view>
       </view>
@@ -50,7 +63,7 @@
         <text class="game-over-title">🏆 游戏结束</text>
         <text class="game-over-winner">{{ players[winner!].name }} 获胜!</text>
         <text class="game-over-reason">{{ winReason }}</text>
-        <view class="game-over-btn" @tap="restart">
+        <view class="game-over-btn" @tap="restart" v-if="!isOnlineMode">
           <text style="color: #fff; font-size: 30rpx;">再来一局</text>
         </view>
         <view class="game-over-btn secondary" @tap="goHome">
@@ -62,7 +75,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useGameStore } from '../../stores/gameStore'
 import { CanvasRenderer } from '../../engine/renderer/CanvasRenderer'
 import { CueController } from '../../engine/input/CueController'
@@ -91,9 +104,51 @@ const turnCount = gameStore.turnCount
 const winner = gameStore.winner
 const winReason = gameStore.winReason
 const foulMessage = gameStore.foulMessage
+const isOnlineMode = gameStore.isOnlineMode
+const myPlayerIndex = gameStore.myPlayerIndex
+const networkStatus = gameStore.networkStatus
+
+/** 在线模式下是否是我的回合 */
+const isMyTurnInOnline = computed(() => {
+  if (!isOnlineMode.value) return true
+  return gameStore.isMyTurn()
+})
+
+/** 是否可以瞄准/击球（在线模式下仅我的回合可操作） */
+const canAim = computed(() => {
+  if (!isOnlineMode.value) return true
+  return gameStore.isMyTurn()
+})
+
+const networkStatusText = computed(() => {
+  switch (networkStatus.value) {
+    case 'connected': return '在线'
+    case 'disconnected': return '断线'
+    case 'reconnecting': return '重连中...'
+    default: return ''
+  }
+})
+
+// ---- 页面参数解析 ----
+
+/** 页面加载时解析参数 */
+function parsePageOptions() {
+  // 获取页面参数：mode=online&myIndex=0
+  const pages = getCurrentPages()
+  const currentPage = pages[pages.length - 1] as any
+  const options = currentPage?.options || currentPage?.$page?.options || {}
+
+  if (options.mode === 'online' && options.myIndex !== undefined) {
+    const myIndex = parseInt(options.myIndex, 10)
+    gameStore.initOnlineMode(myIndex)
+  } else {
+    // 本地模式
+    gameStore.initGame()
+  }
+}
 
 onMounted(() => {
-  gameStore.initGame()
+  parsePageOptions()
   nextTick(() => {
     setTimeout(() => {
       createCanvas()
@@ -107,6 +162,10 @@ onMounted(() => {
 onUnmounted(() => {
   if (animationFrameId) {
     cancelAnimationFrame(animationFrameId)
+  }
+  // 如果是在线模式，离开时清理
+  if (gameStore.isOnlineMode) {
+    gameStore.leaveOnlineMode()
   }
 })
 
@@ -167,12 +226,16 @@ function createCanvas() {
   // 击球回调
   cueController.onShoot = (power, angle) => {
     const currentPhase = gameStore.phase
+    // 在线模式下，只有轮到我才能击球
+    if (isOnlineMode.value && !gameStore.isMyTurn()) return
     if (currentPhase === 'aiming' || currentPhase === 'break_shot') {
       gameStore.shoot(power, angle)
     }
   }
 
   cueController.onUpdateAim = () => {
+    // 在线模式下，非我回合不更新瞄准线
+    if (isOnlineMode.value && !gameStore.isMyTurn()) return
     const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
     renderer.aimLine = {
       start: cueBall?.position || Vector2.zero,
@@ -189,8 +252,11 @@ function gameLoop() {
   gameStore.update()
   if (canvasReady && ctx) {
     const currentPhase = gameStore.phase
+    const isMyTurnNow = !isOnlineMode.value || gameStore.isMyTurn()
     const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
-    if (cueBall && (currentPhase === 'aiming' || currentPhase === 'break_shot')) {
+
+    // 只在我的回合显示球杆和瞄准线
+    if (cueBall && isMyTurnNow && (currentPhase === 'aiming' || currentPhase === 'break_shot')) {
       renderer.cueStick.visible = true
       renderer.cueStick.position = cueBall.position
       renderer.cueStick.angle = cueController.aimAngle
@@ -206,21 +272,26 @@ function gameLoop() {
 }
 
 // === 输入处理 ===
+
 function onMouseDown(e: MouseEvent) {
+  if (isOnlineMode.value && !gameStore.isMyTurn()) return
   const rect = (e.target as HTMLElement).getBoundingClientRect()
   handleInputStart(new Vector2(e.clientX - rect.left, e.clientY - rect.top))
 }
 
 function onMouseMove(e: MouseEvent) {
+  if (isOnlineMode.value && !gameStore.isMyTurn()) return
   const rect = (e.target as HTMLElement).getBoundingClientRect()
   handleInputMove(new Vector2(e.clientX - rect.left, e.clientY - rect.top))
 }
 
 function onMouseUp() {
+  if (isOnlineMode.value && !gameStore.isMyTurn()) return
   handleInputEnd()
 }
 
 function onTouchStart(e: TouchEvent) {
+  if (isOnlineMode.value && !gameStore.isMyTurn()) return
   e.preventDefault()
   const rect = (e.target as HTMLElement).getBoundingClientRect()
   const touch = e.touches[0]
@@ -228,6 +299,7 @@ function onTouchStart(e: TouchEvent) {
 }
 
 function onTouchMove(e: TouchEvent) {
+  if (isOnlineMode.value && !gameStore.isMyTurn()) return
   e.preventDefault()
   const rect = (e.target as HTMLElement).getBoundingClientRect()
   const touch = e.touches[0]
@@ -235,6 +307,7 @@ function onTouchMove(e: TouchEvent) {
 }
 
 function onTouchEnd() {
+  if (isOnlineMode.value && !gameStore.isMyTurn()) return
   handleInputEnd()
 }
 
@@ -281,6 +354,9 @@ function restart() {
 }
 
 function goHome() {
+  if (gameStore.isOnlineMode) {
+    gameStore.leaveOnlineMode()
+  }
   uni.navigateBack()
 }
 </script>
@@ -335,6 +411,12 @@ function goHome() {
   color: #aaaacc;
 }
 
+.player-you {
+  font-size: 18rpx;
+  color: #4caf50;
+  margin-top: 4rpx;
+}
+
 .turn-info {
   display: flex;
   flex-direction: column;
@@ -350,6 +432,45 @@ function goHome() {
 .turn-count {
   font-size: 18rpx;
   color: #666688;
+}
+
+/* 在线状态条 */
+.online-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6rpx 20rpx;
+  background-color: rgba(20, 20, 40, 0.7);
+  gap: 10rpx;
+}
+
+.online-dot {
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+}
+
+.online-dot.connected {
+  background-color: #4caf50;
+}
+
+.online-dot.disconnected {
+  background-color: #f44336;
+}
+
+.online-dot.reconnecting {
+  background-color: #ff9800;
+  animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.online-status-text {
+  font-size: 20rpx;
+  color: #8888aa;
 }
 
 .canvas-container {
