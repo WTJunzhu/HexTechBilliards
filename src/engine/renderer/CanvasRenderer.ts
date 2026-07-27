@@ -4,6 +4,9 @@
  * 支持两种模式：
  * 1. H5标准Canvas模式（直接使用HTMLCanvasElement）
  * 2. uni-app Canvas模式（通过uni.createCanvasContext）
+ *
+ * 球桌居中绘制：在 canvas 中留出四周 margin，球桌居中显示
+ * 坐标转换：toPixel/toGame 均考虑 tableOffsetX/Y 偏移
  */
 import { Vector2 } from '../physics/Vector2'
 import type { Ball } from '../physics/Ball'
@@ -15,6 +18,8 @@ import {
 import type { PhysicsWorld } from '../physics/PhysicsWorld'
 import type { ForceField } from '../physics/ForceField'
 
+export type SpinType = 'center' | 'top' | 'bottom' | 'left' | 'right' | 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
+
 export class CanvasRenderer {
   private ctx: CanvasRenderingContext2D | null = null
   private canvasWidth: number = 0
@@ -22,16 +27,25 @@ export class CanvasRenderer {
   private scale: number = RENDER_SCALE
   private forceFields: ForceField[] = []
 
+  /** 球桌在 canvas 中的偏移（居中留白） */
+  private tableOffsetX: number = 0
+  private tableOffsetY: number = 0
+
   /** 瞄准线 */
   public aimLine: { start: Vector2; end: Vector2 } | null = null
 
   /** 球杆信息 */
-  public cueStick: { position: Vector2; angle: number; power: number; visible: boolean } = {
+  public cueStick: { position: Vector2; angle: number; power: number; visible: boolean; shooting: boolean; shootProgress: number } = {
     position: Vector2.zero,
     angle: 0,
     power: 0,
     visible: false,
+    shooting: false,
+    shootProgress: 0,
   }
+
+  /** 击球部位 */
+  public spinType: SpinType = 'center'
 
   /**
    * 使用标准 CanvasRenderingContext2D 初始化
@@ -41,9 +55,18 @@ export class CanvasRenderer {
     this.canvasWidth = width
     this.canvasHeight = height
 
-    // 根据canvas尺寸计算缩放
+    // 计算球桌总尺寸（含库边）
     const totalWidth = TABLE_WIDTH + CUSHION_WIDTH * 2
-    this.scale = width / totalWidth
+    const totalHeight = TABLE_HEIGHT + CUSHION_WIDTH * 2
+
+    // 按宽度适配，留出上下 margin
+    this.scale = width / (totalWidth + 4) // 左右各留 2 游戏单位
+
+    // 计算球桌在 canvas 中的偏移（居中）
+    const renderedWidth = totalWidth * this.scale
+    const renderedHeight = totalHeight * this.scale
+    this.tableOffsetX = (width - renderedWidth) / 2
+    this.tableOffsetY = (height - renderedHeight) / 2
   }
 
   setForceFields(fields: ForceField[]): void {
@@ -53,20 +76,26 @@ export class CanvasRenderer {
   /** 游戏坐标 → Canvas像素 */
   toPixel(pos: Vector2): Vector2 {
     return new Vector2(
-      (pos.x + CUSHION_WIDTH) * this.scale,
-      (pos.y + CUSHION_WIDTH) * this.scale,
+      (pos.x + CUSHION_WIDTH) * this.scale + this.tableOffsetX,
+      (pos.y + CUSHION_WIDTH) * this.scale + this.tableOffsetY,
     )
   }
 
   /** Canvas像素 → 游戏坐标 */
   toGame(pixel: Vector2): Vector2 {
     return new Vector2(
-      pixel.x / this.scale - CUSHION_WIDTH,
-      pixel.y / this.scale - CUSHION_WIDTH,
+      (pixel.x - this.tableOffsetX) / this.scale - CUSHION_WIDTH,
+      (pixel.y - this.tableOffsetY) / this.scale - CUSHION_WIDTH,
     )
   }
 
   private _firstFrame = true
+
+  /** 开始击球动画 */
+  startShootAnimation(): void {
+    this.cueStick.shooting = true
+    this.cueStick.shootProgress = 0
+  }
 
   /** 完整渲染一帧 */
   render(world: PhysicsWorld): void {
@@ -75,6 +104,10 @@ export class CanvasRenderer {
 
     // 清空画布
     ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight)
+
+    // 绘制背景（球桌周围的深色区域）
+    ctx.fillStyle = '#0a0a14'
+    ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight)
 
     // 绘制球桌
     this.drawTable(ctx)
@@ -101,6 +134,16 @@ export class CanvasRenderer {
     if (this.cueStick.visible) {
       this.drawCueStick(ctx)
     }
+
+    // 更新击球动画进度
+    if (this.cueStick.shooting) {
+      this.cueStick.shootProgress += 0.12 // 约 8 帧完成
+      if (this.cueStick.shootProgress >= 1) {
+        this.cueStick.shooting = false
+        this.cueStick.shootProgress = 0
+        this.cueStick.visible = false
+      }
+    }
   }
 
   // ==================== 球桌绘制 ====================
@@ -109,22 +152,25 @@ export class CanvasRenderer {
     const totalWidth = (TABLE_WIDTH + CUSHION_WIDTH * 2) * this.scale
     const totalHeight = (TABLE_HEIGHT + CUSHION_WIDTH * 2) * this.scale
 
+    const ox = this.tableOffsetX
+    const oy = this.tableOffsetY
+
     // 外框（深色木纹）
     ctx.fillStyle = '#3E2723'
-    ctx.fillRect(0, 0, totalWidth, totalHeight)
+    ctx.fillRect(ox, oy, totalWidth, totalHeight)
 
     // 库边（稍浅的木色）
     const cushionInset = CUSHION_WIDTH * this.scale * 0.1
     ctx.fillStyle = '#5D4037'
     ctx.fillRect(
-      cushionInset, cushionInset,
+      ox + cushionInset, oy + cushionInset,
       totalWidth - cushionInset * 2,
       totalHeight - cushionInset * 2,
     )
 
     // 台面（绿色）
-    const tableX = CUSHION_WIDTH * this.scale
-    const tableY = CUSHION_WIDTH * this.scale
+    const tableX = ox + CUSHION_WIDTH * this.scale
+    const tableY = oy + CUSHION_WIDTH * this.scale
     const tableW = TABLE_WIDTH * this.scale
     const tableH = TABLE_HEIGHT * this.scale
     ctx.fillStyle = '#1B5E20'
@@ -255,29 +301,55 @@ export class CanvasRenderer {
     const cuePos = this.toPixel(this.cueStick.position)
     const angle = this.cueStick.angle
     const power = this.cueStick.power
-    const pullBack = power * this.scale * 0.5
+    const isShooting = this.cueStick.shooting
+    const shootProgress = this.cueStick.shootProgress
 
     const cueLength = 25 * this.scale
     const cueWidth = 1.5 * this.scale
 
-    // 球杆拉杆偏移
-    const offsetX = Math.cos(angle + Math.PI) * (pullBack + BALL_RADIUS * this.scale + 2)
-    const offsetY = Math.sin(angle + Math.PI) * (pullBack + BALL_RADIUS * this.scale + 2)
+    // 基础间距：球杆尖端到球表面的距离（像素）
+    const baseGap = BALL_RADIUS * this.scale * 0.8
+    // 蓄力拉杆距离：力度越大，球杆越远离球
+    const pullBackDist = power * this.scale * 3
+
+    // 击球动画：球杆冲向球
+    let animGap = 0
+    if (isShooting) {
+      // 动画前半段：从当前位置冲到球表面 (gap → 0)
+      // 动画后半段：球杆跟随球一小段
+      if (shootProgress < 0.5) {
+        // 线性插值从 (baseGap + pullBackDist) 到 0
+        const t = shootProgress / 0.5
+        animGap = -(baseGap + pullBackDist) * t // 负值=向前冲
+      } else {
+        // 球杆已经接触球，保持 gap=0
+        animGap = -(baseGap + pullBackDist)
+      }
+    }
+
+    // 球杆尖端离白球中心的距离（像素）
+    const tipDistFromCenter = BALL_RADIUS * this.scale + baseGap + pullBackDist + animGap
+
+    // 球杆方向：从白球中心指向球杆尾部（angle + PI）
+    const offsetX = Math.cos(angle + Math.PI) * tipDistFromCenter
+    const offsetY = Math.sin(angle + Math.PI) * tipDistFromCenter
 
     ctx.save()
     ctx.translate(cuePos.x + offsetX, cuePos.y + offsetY)
     ctx.rotate(angle)
 
-    // 球杆主体
+    // 球杆主体（从细端到粗端）
     const gradient = ctx.createLinearGradient(0, 0, cueLength, 0)
-    gradient.addColorStop(0, '#4E342E')
-    gradient.addColorStop(0.1, '#FFE0B2')
-    gradient.addColorStop(0.3, '#EFEBE9')
-    gradient.addColorStop(1, '#5D4037')
+    gradient.addColorStop(0, '#4E342E')     // 细端（击球端）- 深棕色
+    gradient.addColorStop(0.05, '#FFE0B2')  // 皮头白色
+    gradient.addColorStop(0.1, '#EFEBE9')  // 接口铜色
+    gradient.addColorStop(0.3, '#D7CCC8')   // 前节浅木色
+    gradient.addColorStop(0.7, '#8D6E63')   // 后节深木色
+    gradient.addColorStop(1, '#5D4037')     // 底部深棕色
 
     ctx.beginPath()
-    ctx.moveTo(0, -cueWidth / 6)
-    ctx.lineTo(cueLength, -cueWidth / 2)
+    ctx.moveTo(0, -cueWidth / 6)          // 尖端细
+    ctx.lineTo(cueLength, -cueWidth / 2)   // 尾端粗
     ctx.lineTo(cueLength, cueWidth / 2)
     ctx.lineTo(0, cueWidth / 6)
     ctx.closePath()

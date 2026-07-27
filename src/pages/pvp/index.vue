@@ -44,23 +44,70 @@
       <text class="online-status-text">{{ networkStatusText }}</text>
     </view>
 
-    <!-- Canvas 游戏区域 - 使用普通div容器 + 纯DOM canvas -->
+    <!-- Canvas 游戏区域 -->
     <view class="canvas-container">
       <div class="canvas-wrapper" ref="canvasWrapper"></div>
     </view>
 
-    <!-- 力度条 -->
-    <view class="power-bar-container" v-if="canAim && (phase === 'aiming' || phase === 'break_shot')">
-      <view class="power-bar-bg">
-        <view class="power-bar-fill" :style="{ width: powerPercent + '%' }"></view>
+    <!-- 底部控制面板 -->
+    <view class="bottom-panel">
+      <!-- 蓄力条 -->
+      <view class="power-bar-container" v-if="canAim && (phase === 'aiming' || phase === 'break_shot')">
+        <view class="power-bar-bg">
+          <view class="power-bar-fill" :style="{ width: powerPercent + '%' }"></view>
+        </view>
+        <text class="power-text">{{ Math.round(powerPercent) }}%</text>
       </view>
-      <text class="power-text">{{ Math.round(powerPercent) }}%</text>
+      <!-- 非瞄准时显示提示 -->
+      <view class="power-bar-container placeholder" v-else>
+        <text class="power-placeholder">{{ phaseHint }}</text>
+      </view>
+
+      <view class="bottom-controls">
+        <!-- 击球部位选择器 -->
+        <view class="spin-selector">
+          <text class="spin-label">击球部位</text>
+          <view class="spin-grid">
+            <view class="spin-cell" :class="{ active: spinType === 'topLeft' }" @tap="spinType = 'topLeft'"></view>
+            <view class="spin-cell" :class="{ active: spinType === 'top' }" @tap="spinType = 'top'"></view>
+            <view class="spin-cell" :class="{ active: spinType === 'topRight' }" @tap="spinType = 'topRight'"></view>
+            <view class="spin-cell" :class="{ active: spinType === 'left' }" @tap="spinType = 'left'"></view>
+            <view class="spin-center" :class="{ active: spinType === 'center' }" @tap="spinType = 'center'"></view>
+            <view class="spin-cell" :class="{ active: spinType === 'right' }" @tap="spinType = 'right'"></view>
+            <view class="spin-cell" :class="{ active: spinType === 'bottomLeft' }" @tap="spinType = 'bottomLeft'"></view>
+            <view class="spin-cell" :class="{ active: spinType === 'bottom' }" @tap="spinType = 'bottom'"></view>
+            <view class="spin-cell" :class="{ active: spinType === 'bottomRight' }" @tap="spinType = 'bottomRight'"></view>
+          </view>
+        </view>
+
+        <!-- 已进球展示 -->
+        <view class="pocketed-display">
+          <view class="pocketed-row">
+            <text class="pocketed-label">全色</text>
+            <view class="pocketed-balls-row">
+              <view class="mini-ball" v-for="b in solidPocketedBalls" :key="b.number"
+                :style="{ backgroundColor: b.color }">
+                <text class="mini-ball-num">{{ b.number }}</text>
+              </view>
+            </view>
+          </view>
+          <view class="pocketed-row">
+            <text class="pocketed-label">花色</text>
+            <view class="pocketed-balls-row">
+              <view class="mini-ball stripe" v-for="b in stripePocketedBalls" :key="b.number"
+                :style="{ borderColor: b.color }">
+                <text class="mini-ball-num">{{ b.number }}</text>
+              </view>
+            </view>
+          </view>
+        </view>
+      </view>
     </view>
 
     <!-- 游戏结束弹窗 -->
     <view class="game-over-overlay" v-if="phase === 'game_over'">
       <view class="game-over-card">
-        <text class="game-over-title">🏆 游戏结束</text>
+        <text class="game-over-title">游戏结束</text>
         <text class="game-over-winner">{{ players[winner!].name }} 获胜!</text>
         <text class="game-over-reason">{{ winReason }}</text>
         <view class="game-over-btn" @tap="restart" v-if="!isOnlineMode">
@@ -80,13 +127,16 @@ import { useGameStore } from '../../stores/gameStore'
 import { CanvasRenderer } from '../../engine/renderer/CanvasRenderer'
 import { CueController } from '../../engine/input/CueController'
 import { Vector2 } from '../../engine/physics/Vector2'
-import { TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH } from '../../engine/physics/TableSpec'
+import { TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH, BallColor, isSolidBall, isStripeBall } from '../../engine/physics/TableSpec'
+
+type SpinType = 'center' | 'top' | 'bottom' | 'left' | 'right' | 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
 
 const gameStore = useGameStore()
 const renderer = new CanvasRenderer()
 const cueController = new CueController()
 
 const powerPercent = ref(0)
+const spinType = ref<SpinType>('center')
 const canvasWrapper = ref<HTMLElement | null>(null)
 let animationFrameId = 0
 let canvasReady = false
@@ -129,11 +179,33 @@ const networkStatusText = computed(() => {
   }
 })
 
+/** 阶段提示文字 */
+const phaseHint = computed(() => {
+  switch (phase.value) {
+    case 'moving': return '球在运动中...'
+    case 'ball_in_hand': return isMyTurnInOnline.value ? '点击桌面放置白球' : '对手放置白球...'
+    case 'game_over': return '游戏结束'
+    default: return ''
+  }
+})
+
+/** 已进袋的全色球 */
+const solidPocketedBalls = computed(() => {
+  return gameStore.physicsWorld.balls
+    .filter(b => !b.active && isSolidBall(b.number))
+    .map(b => ({ number: b.number, color: b.color }))
+})
+
+/** 已进袋的花色球 */
+const stripePocketedBalls = computed(() => {
+  return gameStore.physicsWorld.balls
+    .filter(b => !b.active && isStripeBall(b.number))
+    .map(b => ({ number: b.number, color: b.color }))
+})
+
 // ---- 页面参数解析 ----
 
-/** 页面加载时解析参数 */
 function parsePageOptions() {
-  // 获取页面参数：mode=online&myIndex=0
   const pages = getCurrentPages()
   const currentPage = pages[pages.length - 1] as any
   const options = currentPage?.options || currentPage?.$page?.options || {}
@@ -142,7 +214,6 @@ function parsePageOptions() {
     const myIndex = parseInt(options.myIndex, 10)
     gameStore.initOnlineMode(myIndex)
   } else {
-    // 本地模式
     gameStore.initGame()
   }
 }
@@ -163,7 +234,6 @@ onUnmounted(() => {
   if (animationFrameId) {
     cancelAnimationFrame(animationFrameId)
   }
-  // 如果是在线模式，离开时清理
   if (gameStore.isOnlineMode) {
     gameStore.leaveOnlineMode()
   }
@@ -176,13 +246,12 @@ function createCanvas() {
     return
   }
 
-  // 清理已有的canvas
   canvasWrapper.value.innerHTML = ''
 
-  // 创建原生canvas元素
   canvasEl = document.createElement('canvas')
+  // Canvas 宽度 = 容器宽度，高度 = 容器高度
   const containerWidth = canvasWrapper.value.clientWidth || window.innerWidth
-  const containerHeight = Math.floor(containerWidth * 0.55) // 2:1比例 + 库边
+  const containerHeight = canvasWrapper.value.clientHeight || Math.floor(containerWidth * 0.5)
 
   logicalWidth = containerWidth
   logicalHeight = containerHeight
@@ -193,7 +262,7 @@ function createCanvas() {
   canvasEl.style.width = logicalWidth + 'px'
   canvasEl.style.height = logicalHeight + 'px'
   canvasEl.style.display = 'block'
-  canvasEl.style.touchAction = 'none' // 防止触摸滚动
+  canvasEl.style.touchAction = 'none'
 
   ctx = canvasEl.getContext('2d')!
   if (!ctx) {
@@ -202,14 +271,12 @@ function createCanvas() {
   }
   ctx.scale(dpr, dpr)
 
-  // 计算缩放 - 直接使用导入的常量
   const totalTableWidth = TABLE_WIDTH + CUSHION_WIDTH * 2
-  scale = logicalWidth / totalTableWidth
+  scale = logicalWidth / (totalTableWidth + 4)
 
   renderer.init(ctx, logicalWidth, logicalHeight)
   canvasReady = true
 
-  // 插入DOM
   canvasWrapper.value.appendChild(canvasEl)
 
   console.log('[Canvas] Created native canvas:', logicalWidth, 'x', logicalHeight,
@@ -226,15 +293,15 @@ function createCanvas() {
   // 击球回调
   cueController.onShoot = (power, angle) => {
     const currentPhase = gameStore.phase
-    // 在线模式下，只有轮到我才能击球
     if (isOnlineMode.value && !gameStore.isMyTurn()) return
     if (currentPhase === 'aiming' || currentPhase === 'break_shot') {
+      // 启动击球动画
+      renderer.startShootAnimation()
       gameStore.shoot(power, angle)
     }
   }
 
   cueController.onUpdateAim = () => {
-    // 在线模式下，非我回合不更新瞄准线
     if (isOnlineMode.value && !gameStore.isMyTurn()) return
     const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
     renderer.aimLine = {
@@ -255,15 +322,22 @@ function gameLoop() {
     const isMyTurnNow = !isOnlineMode.value || gameStore.isMyTurn()
     const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
 
-    // 只在我的回合显示球杆和瞄准线
-    if (cueBall && isMyTurnNow && (currentPhase === 'aiming' || currentPhase === 'break_shot')) {
+    // 只在我的回合显示球杆和瞄准线（击球动画期间也显示）
+    const isCueVisible = cueBall && isMyTurnNow && (
+      currentPhase === 'aiming' || currentPhase === 'break_shot' || renderer.cueStick.shooting
+    )
+
+    if (isCueVisible) {
       renderer.cueStick.visible = true
-      renderer.cueStick.position = cueBall.position
+      renderer.cueStick.position = cueBall!.position
       renderer.cueStick.angle = cueController.aimAngle
       renderer.cueStick.power = cueController.power
+      renderer.spinType = spinType.value
     } else {
-      renderer.cueStick.visible = false
-      renderer.aimLine = null
+      if (!renderer.cueStick.shooting) {
+        renderer.cueStick.visible = false
+        renderer.aimLine = null
+      }
     }
 
     renderer.render(gameStore.physicsWorld as any)
@@ -367,7 +441,7 @@ function goHome() {
   flex-direction: column;
   width: 100vw;
   height: 100vh;
-  background-color: #0d1117;
+  background-color: #0a0a14;
   overflow: hidden;
 }
 
@@ -375,46 +449,47 @@ function goHome() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10rpx 20rpx;
-  height: 100rpx;
-  background-color: rgba(20, 20, 40, 0.9);
+  padding: 6rpx 16rpx;
+  height: 80rpx;
+  background-color: rgba(20, 20, 40, 0.95);
   flex-shrink: 0;
+  border-bottom: 1rpx solid rgba(100, 100, 255, 0.15);
 }
 
 .player-info {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 10rpx 20rpx;
-  border-radius: 10rpx;
-  min-width: 160rpx;
+  padding: 6rpx 16rpx;
+  border-radius: 8rpx;
+  min-width: 140rpx;
 }
 
 .player-info.active {
   background-color: rgba(100, 100, 255, 0.2);
-  border: 2rpx solid rgba(100, 100, 255, 0.5);
+  border: 1rpx solid rgba(100, 100, 255, 0.5);
 }
 
 .player-name {
-  font-size: 24rpx;
+  font-size: 22rpx;
   color: #e0e0ff;
   font-weight: bold;
 }
 
 .player-group {
-  font-size: 20rpx;
+  font-size: 18rpx;
   color: #8888aa;
 }
 
 .player-score {
-  font-size: 20rpx;
+  font-size: 18rpx;
   color: #aaaacc;
 }
 
 .player-you {
-  font-size: 18rpx;
+  font-size: 16rpx;
   color: #4caf50;
-  margin-top: 4rpx;
+  margin-top: 2rpx;
 }
 
 .turn-info {
@@ -424,13 +499,13 @@ function goHome() {
 }
 
 .turn-text {
-  font-size: 24rpx;
+  font-size: 22rpx;
   color: #e0e0ff;
   font-weight: bold;
 }
 
 .turn-count {
-  font-size: 18rpx;
+  font-size: 16rpx;
   color: #666688;
 }
 
@@ -439,25 +514,19 @@ function goHome() {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6rpx 20rpx;
+  padding: 4rpx 16rpx;
   background-color: rgba(20, 20, 40, 0.7);
-  gap: 10rpx;
+  gap: 8rpx;
 }
 
 .online-dot {
-  width: 14rpx;
-  height: 14rpx;
+  width: 12rpx;
+  height: 12rpx;
   border-radius: 50%;
 }
 
-.online-dot.connected {
-  background-color: #4caf50;
-}
-
-.online-dot.disconnected {
-  background-color: #f44336;
-}
-
+.online-dot.connected { background-color: #4caf50; }
+.online-dot.disconnected { background-color: #f44336; }
 .online-dot.reconnecting {
   background-color: #ff9800;
   animation: blink 1s ease-in-out infinite;
@@ -469,18 +538,20 @@ function goHome() {
 }
 
 .online-status-text {
-  font-size: 20rpx;
+  font-size: 18rpx;
   color: #8888aa;
 }
 
+/* Canvas 区域 */
 .canvas-container {
   flex: 1;
   width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #0d1117;
-  min-height: 200rpx;
+  background-color: #0a0a14;
+  min-height: 100rpx;
+  max-height: 55vh;
 }
 
 .canvas-wrapper {
@@ -488,38 +559,161 @@ function goHome() {
   height: 100%;
 }
 
+/* 底部面板 */
+.bottom-panel {
+  flex-shrink: 0;
+  background-color: rgba(20, 20, 40, 0.95);
+  border-top: 1rpx solid rgba(100, 100, 255, 0.15);
+  padding: 10rpx 20rpx;
+}
+
+/* 蓄力条 */
 .power-bar-container {
   display: flex;
   align-items: center;
+  padding: 8rpx 0;
+  height: 50rpx;
+}
+
+.power-bar-container.placeholder {
   justify-content: center;
-  padding: 10rpx 30rpx;
-  height: 60rpx;
-  background-color: rgba(20, 20, 40, 0.9);
-  flex-shrink: 0;
 }
 
 .power-bar-bg {
   flex: 1;
-  height: 16rpx;
+  height: 14rpx;
   background-color: #333355;
-  border-radius: 8rpx;
+  border-radius: 7rpx;
   overflow: hidden;
 }
 
 .power-bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #4caf50, #ff9800, #f44336);
-  border-radius: 8rpx;
+  border-radius: 7rpx;
   transition: width 0.05s;
 }
 
 .power-text {
-  margin-left: 15rpx;
-  font-size: 22rpx;
+  margin-left: 12rpx;
+  font-size: 20rpx;
   color: #e0e0ff;
-  min-width: 60rpx;
+  min-width: 50rpx;
 }
 
+.power-placeholder {
+  font-size: 20rpx;
+  color: #666688;
+}
+
+/* 底部控制区 */
+.bottom-controls {
+  display: flex;
+  gap: 20rpx;
+  padding-top: 8rpx;
+}
+
+/* 击球部位选择器 */
+.spin-selector {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6rpx;
+}
+
+.spin-label {
+  font-size: 18rpx;
+  color: #8888aa;
+  margin-bottom: 2rpx;
+}
+
+.spin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 4rpx;
+  width: 150rpx;
+  height: 150rpx;
+}
+
+.spin-cell {
+  width: 44rpx;
+  height: 44rpx;
+  border-radius: 4rpx;
+  background-color: #1a1a30;
+  border: 1rpx solid #333355;
+}
+
+.spin-cell.active {
+  background-color: rgba(100, 100, 255, 0.4);
+  border-color: rgba(100, 100, 255, 0.8);
+}
+
+.spin-center {
+  width: 44rpx;
+  height: 44rpx;
+  border-radius: 22rpx;
+  background-color: #1a1a30;
+  border: 2rpx solid #444466;
+}
+
+.spin-center.active {
+  background-color: rgba(255, 255, 255, 0.9);
+  border-color: #ffffff;
+}
+
+/* 已进球展示 */
+.pocketed-display {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  min-height: 0;
+}
+
+.pocketed-row {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.pocketed-label {
+  font-size: 18rpx;
+  color: #8888aa;
+  min-width: 50rpx;
+}
+
+.pocketed-balls-row {
+  display: flex;
+  gap: 4rpx;
+  flex-wrap: wrap;
+}
+
+.mini-ball {
+  width: 36rpx;
+  height: 36rpx;
+  border-radius: 18rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #1a1a30;
+  position: relative;
+}
+
+.mini-ball.stripe {
+  background-color: #ffffff;
+  border-width: 4rpx;
+  border-style: solid;
+}
+
+.mini-ball-num {
+  font-size: 16rpx;
+  color: #000000;
+  font-weight: bold;
+}
+
+/* 游戏结束弹窗 */
 .game-over-overlay {
   position: fixed;
   top: 0;

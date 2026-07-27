@@ -7,6 +7,9 @@
 
     <!-- 玩家名称输入 -->
     <view class="name-input-area" v-if="step === 'input_name'">
+      <view class="back-home-btn" @tap="goHome">
+        <text style="color: #8888aa; font-size: 24rpx;">&larr; 返回首页</text>
+      </view>
       <view class="input-card">
         <text class="input-label">输入你的昵称</text>
         <input
@@ -330,6 +333,10 @@ function onLeaveRoom() {
   step.value = 'choose_action'
 }
 
+function goHome() {
+  uni.navigateBack()
+}
+
 function resetState() {
   roomId.value = ''
   isHost.value = false
@@ -382,6 +389,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.back-home-btn {
+  margin-bottom: 20rpx;
+  padding: 15rpx;
+  text-align: center;
 }
 
 .input-card {
