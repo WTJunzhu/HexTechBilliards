@@ -79,17 +79,16 @@ export class Ball {
     this.velocity = Vector2.fromAngle(angle, power)
   }
 
-  /** 更新位置（物理步进） */
-  update(): void {
-    if (!this.active || !this.moving) return
+  /** 仅更新位置（子步进内部用，不含摩擦和停止判定） */
+  updatePosition(dt: number): void {
+    if (!this.active) return
+    this.position = this.position.add(this.velocity.multiply(dt))
+  }
 
-    // 位置更新
-    this.position = this.position.add(this.velocity)
-
-    // 摩擦衰减
+  /** 应用摩擦和停止判定（每帧调用一次，非每子步进） */
+  applyFriction(): void {
+    if (!this.active) return
     this.velocity = this.velocity.multiply(FRICTION)
-
-    // 停止判定
     if (this.velocity.length < MIN_VELOCITY) {
       this.velocity = Vector2.zero
     }

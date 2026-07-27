@@ -4,6 +4,7 @@ import {
   TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
   CORNER_POCKET_RADIUS, SIDE_POCKET_RADIUS,
   POCKET_POSITIONS, COLLISION_LOSS, CUSHION_LOSS, BALL_DIAMETER, BALL_RADIUS,
+  MIN_VELOCITY,
 } from './TableSpec'
 
 /**
@@ -16,19 +17,21 @@ export type PocketHook = (ball: Ball, pocketIndex: number) => void
 /**
  * 物理世界 - 2D台球物理引擎
  *
- * 核心物理基于 Classic-8-Ball-Pool 的实现改造：
- * - 2D弹性碰撞（法线/切线分解）
- * - 矩形边界碰撞（库边反弹 + 能量损失）
- * - 进袋判定（袋口距离检测）
- * - 摩擦衰减
+ * 核心改进（vs 旧版）：
+ * 1. 子步进（sub-stepping）：每帧执行多次物理步进，防止隧道效应
+ * 2. 正确的执行顺序：位置更新 → 碰撞检测/响应，不再跳过静止球
+ * 3. 碰撞后速度立即生效，下一子步进即会移动被碰撞的球
+ * 4. 每帧仅末尾应用一次摩擦衰减（而非每子步进都衰减，避免过度减速）
  *
- * 中式八球特殊处理：
- * - 使用中式八球球桌尺寸
- * - 圆角袋口
- * - 6个袋口位置
+ * 2D弹性碰撞原理：
+ * - 等质量弹性碰撞：法线方向速度交换，切线方向速度不变
+ * - 碰撞后分离（MTD修正）防止粘连
  */
 export class PhysicsWorld {
   public balls: Ball[] = []
+
+  /** 子步进次数（每帧物理细分，防止隧道效应） */
+  private static readonly SUB_STEPS = 4
 
   // 海克斯Hook预留
   private preCollisionHooks: CollisionHook[] = []
@@ -69,24 +72,34 @@ export class PhysicsWorld {
     this.pocketHooks = []
   }
 
-  /** 物理步进 - 每帧调用 */
+  /** 物理步进 - 每帧调用一次 */
   step(): void {
     this.pocketedBallsThisFrame = []
     this.collisionEventsThisFrame = []
 
-    // 更新球位置
-    for (const ball of this.balls) {
-      ball.update()
+    const subSteps = PhysicsWorld.SUB_STEPS
+    const dt = 1 / subSteps
+
+    for (let s = 0; s < subSteps; s++) {
+      // 1. 更新位置（所有活跃球，不论是否 moving）
+      for (const ball of this.balls) {
+        ball.updatePosition(dt)
+      }
+
+      // 2. 检测进袋
+      this.handlePockets()
+
+      // 3. 检测球-球碰撞（含连锁碰撞）
+      this.handleBallCollisions()
+
+      // 4. 检测库边碰撞
+      this.handleCushionCollisions()
     }
 
-    // 检测进袋
-    this.handlePockets()
-
-    // 检测碰撞
-    this.handleBallCollisions()
-
-    // 检测库边碰撞
-    this.handleCushionCollisions()
+    // 5. 每帧末尾统一应用摩擦衰减（而非每子步进都衰减）
+    for (const ball of this.balls) {
+      ball.applyFriction()
+    }
   }
 
   /** 检测所有球是否停止运动 */
@@ -123,20 +136,30 @@ export class PhysicsWorld {
   // ==================== 球-球碰撞 ====================
 
   /**
-   * 2D弹性碰撞（参考 Classic-8-Ball-Pool 的 resolveBallsCollision）
-   * 法线/切线分解，等质量弹性碰撞
+   * 球-球碰撞检测与响应
+   * 使用多次迭代确保连锁碰撞全部处理
    */
   private handleBallCollisions(): void {
-    for (let i = 0; i < this.balls.length; i++) {
-      const ball1 = this.balls[i]
-      if (!ball1.active) continue
+    // 最多迭代 3 次确保连锁碰撞（A→B→C）全部处理
+    for (let iteration = 0; iteration < 3; iteration++) {
+      let anyCollision = false
 
-      for (let j = i + 1; j < this.balls.length; j++) {
-        const ball2 = this.balls[j]
-        if (!ball2.active) continue
+      for (let i = 0; i < this.balls.length; i++) {
+        const ball1 = this.balls[i]
+        if (!ball1.active) continue
 
-        this.resolveBallCollision(ball1, ball2)
+        for (let j = i + 1; j < this.balls.length; j++) {
+          const ball2 = this.balls[j]
+          if (!ball2.active) continue
+
+          if (this.resolveBallCollision(ball1, ball2)) {
+            anyCollision = true
+          }
+        }
       }
+
+      // 如果本轮没有任何碰撞，无需继续迭代
+      if (!anyCollision) break
     }
   }
 
@@ -182,8 +205,13 @@ export class PhysicsWorld {
     ball1.velocity = ball1.velocity.multiply(1 - COLLISION_LOSS)
     ball2.velocity = ball2.velocity.multiply(1 - COLLISION_LOSS)
 
-    // 记录碰撞事件
-    this.collisionEventsThisFrame.push({ ball1, ball2 })
+    // 记录碰撞事件（去重：同一对球每帧只记录一次）
+    const alreadyRecorded = this.collisionEventsThisFrame.some(
+      e => (e.ball1 === ball1 && e.ball2 === ball2) || (e.ball1 === ball2 && e.ball2 === ball1)
+    )
+    if (!alreadyRecorded) {
+      this.collisionEventsThisFrame.push({ ball1, ball2 })
+    }
 
     // 触发碰撞后Hook
     for (const hook of this.postCollisionHooks) {
@@ -195,13 +223,9 @@ export class PhysicsWorld {
 
   // ==================== 库边碰撞 ====================
 
-  /**
-   * 库边碰撞（参考 Classic-8-Ball-Pool 的 resolveBallCollisionWithCushion）
-   * 矩形边界检测 + 法线反弹
-   */
   private handleCushionCollisions(): void {
     for (const ball of this.balls) {
-      if (!ball.active || !ball.moving) continue
+      if (!ball.active) continue
 
       this.resolveCushionCollision(ball)
     }
