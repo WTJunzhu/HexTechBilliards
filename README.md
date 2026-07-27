@@ -42,13 +42,16 @@ npm run dev
 
 #### 2. 部署前端到 Vercel
 
-1. 登录 [Vercel](https://vercel.com)，导入 GitHub 仓库
-2. **Framework Preset** 选 `Other`
-3. **Build Command**: `npm run build:h5`
-4. **Output Directory**: `dist/build/h5`
-5. **环境变量** 添加：
-   - `VITE_SIGNALING_URL` = `wss://hextech-billiards-server.onrender.com`
-6. 点击 Deploy
+1. 登录 [Vercel](https://vercel.com)，**Add New Project** → 导入 GitHub 仓库 `WTJunzhu/HexTechBilliards`
+2. **Configure Project** 页面设置：
+   - **Framework Preset**: `Other`
+   - **Build Command**: `npm run build:h5`
+   - **Output Directory**: `dist/build/h5`
+   - **Install Command**: `npm install`（默认即可）
+3. **Environment Variables** 添加：
+   - `VITE_SIGNALING_URL` = `wss://hextechbilliards.onrender.com`
+4. 点击 **Deploy**
+5. ⚠️ 如果构建时报 Vue peer dependency 警告，忽略即可，不影响构建
 
 ### 环境变量说明
 
