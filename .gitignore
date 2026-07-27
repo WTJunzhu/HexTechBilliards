@@ -27,3 +27,6 @@ dist
 
 # 服务器构建产物
 server/dist
+
+# Vercel 构建输出（构建时生成，不提交）
+.vercel/output
