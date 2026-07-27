@@ -9,12 +9,13 @@
   },
   "dependencies": {
     "ws": "^8.18.0",
-    "uuid": "^9.0.0"
-  },
-  "devDependencies": {
+    "uuid": "^9.0.0",
+    "@types/node": "^22.0.0",
     "@types/ws": "^8.5.14",
     "@types/uuid": "^9.0.8",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
   }
 }
