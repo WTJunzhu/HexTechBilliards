@@ -14,8 +14,17 @@ import type {
  * 对外暴露事件驱动接口，游戏代码只需监听 NetworkEvent
  */
 
-/** 默认信令服务器地址（开发环境） */
-const DEFAULT_SERVER_URL = 'ws://localhost:3001'
+/**
+ * 获取信令服务器地址
+ * 优先使用环境变量 VITE_SIGNALING_URL（生产部署时配置）
+ * 未配置则回退到本地开发地址
+ */
+function getSignalingUrl(): string {
+  const envUrl = import.meta.env.VITE_SIGNALING_URL
+  if (envUrl) return envUrl
+  // 本地开发默认
+  return 'ws://localhost:3001'
+}
 
 export class NetworkManager {
   private signaling: SignalingClient
@@ -38,7 +47,7 @@ export class NetworkManager {
   private eventListeners: ((event: NetworkEvent) => void)[] = []
 
   constructor(serverUrl?: string) {
-    this.signaling = new SignalingClient(serverUrl || DEFAULT_SERVER_URL)
+    this.signaling = new SignalingClient(serverUrl || getSignalingUrl())
     this.peer = new PeerConnection()
 
     // 信令消息路由

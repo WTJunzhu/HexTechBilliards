@@ -17,6 +17,7 @@ export class SignalingClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempts = 0
   private maxReconnectAttempts = 5
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   /** 收到服务器消息的回调 */
   onMessage: ((msg: ServerMessage) => void) | null = null
@@ -60,10 +61,18 @@ export class SignalingClient {
         console.log('[Signaling] Connected to server')
         this.state = 'connected'
         this.reconnectAttempts = 0
+        this.startHeartbeat()
         resolve()
       }
 
       this.ws.onmessage = (event: MessageEvent) => {
+        // 处理 ping/pong 心跳
+        if (event.data === '__ping__') {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send('__pong__')
+          }
+          return
+        }
         try {
           const msg = JSON.parse(event.data as string) as ServerMessage
           this.onMessage?.(msg)
@@ -108,6 +117,7 @@ export class SignalingClient {
 
   /** 主动断开 */
   disconnect(): void {
+    this.stopHeartbeat()
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -118,6 +128,26 @@ export class SignalingClient {
       this.ws = null
     }
     this.state = 'disconnected'
+  }
+
+  // ---- 心跳保活 ----
+
+  /** 启动客户端心跳（响应服务端 ping） */
+  private startHeartbeat(): void {
+    this.stopHeartbeat()
+    // 额外：客户端每 25s 发一次心跳，防止 Render 空闲超时
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: 'heartbeat' }))
+      }
+    }, 25_000)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
   }
 
   // ---- 发送消息 ----

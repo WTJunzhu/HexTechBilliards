@@ -12,6 +12,11 @@ node_modules
 dist
 *.local
 
+# 环境变量文件（含敏感信息，不提交）
+.env
+.env.production
+.env.local
+
 # Editor directories and files
 .idea
 *.suo
@@ -19,3 +24,6 @@ dist
 *.njsproj
 *.sln
 *.sw?
+
+# 服务器构建产物
+server/dist
