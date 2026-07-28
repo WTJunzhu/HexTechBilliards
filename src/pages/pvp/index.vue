@@ -249,9 +249,9 @@ function createCanvas() {
   canvasWrapper.value.innerHTML = ''
 
   canvasEl = document.createElement('canvas')
-  // Canvas 宽度 = 容器宽度，高度 = 容器高度
+  // Canvas 宽度 = 容器宽度，高度 = 容器高度（由CSS flex布局自动填满）
   const containerWidth = canvasWrapper.value.clientWidth || window.innerWidth
-  const containerHeight = canvasWrapper.value.clientHeight || Math.floor(containerWidth * 0.5)
+  const containerHeight = canvasWrapper.value.clientHeight || Math.floor(window.innerHeight * 0.6)
 
   logicalWidth = containerWidth
   logicalHeight = containerHeight
@@ -550,8 +550,8 @@ function goHome() {
   align-items: center;
   justify-content: center;
   background-color: #0a0a14;
-  min-height: 100rpx;
-  max-height: 55vh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .canvas-wrapper {
@@ -564,15 +564,15 @@ function goHome() {
   flex-shrink: 0;
   background-color: rgba(20, 20, 40, 0.95);
   border-top: 1rpx solid rgba(100, 100, 255, 0.15);
-  padding: 10rpx 20rpx;
+  padding: 6rpx 20rpx 10rpx;
 }
 
 /* 蓄力条 */
 .power-bar-container {
   display: flex;
   align-items: center;
-  padding: 8rpx 0;
-  height: 50rpx;
+  padding: 4rpx 0;
+  height: 36rpx;
 }
 
 .power-bar-container.placeholder {
@@ -632,15 +632,15 @@ function goHome() {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(3, 1fr);
-  gap: 4rpx;
-  width: 150rpx;
-  height: 150rpx;
+  gap: 3rpx;
+  width: 110rpx;
+  height: 110rpx;
 }
 
 .spin-cell {
-  width: 44rpx;
-  height: 44rpx;
-  border-radius: 4rpx;
+  width: 34rpx;
+  height: 34rpx;
+  border-radius: 3rpx;
   background-color: #1a1a30;
   border: 1rpx solid #333355;
 }
@@ -651,9 +651,9 @@ function goHome() {
 }
 
 .spin-center {
-  width: 44rpx;
-  height: 44rpx;
-  border-radius: 22rpx;
+  width: 34rpx;
+  height: 34rpx;
+  border-radius: 17rpx;
   background-color: #1a1a30;
   border: 2rpx solid #444466;
 }
@@ -668,32 +668,32 @@ function goHome() {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 8rpx;
+  gap: 4rpx;
   min-height: 0;
 }
 
 .pocketed-row {
   display: flex;
   align-items: center;
-  gap: 8rpx;
+  gap: 6rpx;
 }
 
 .pocketed-label {
-  font-size: 18rpx;
+  font-size: 16rpx;
   color: #8888aa;
-  min-width: 50rpx;
+  min-width: 40rpx;
 }
 
 .pocketed-balls-row {
   display: flex;
-  gap: 4rpx;
+  gap: 3rpx;
   flex-wrap: wrap;
 }
 
 .mini-ball {
-  width: 36rpx;
-  height: 36rpx;
-  border-radius: 18rpx;
+  width: 28rpx;
+  height: 28rpx;
+  border-radius: 14rpx;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -703,12 +703,12 @@ function goHome() {
 
 .mini-ball.stripe {
   background-color: #ffffff;
-  border-width: 4rpx;
+  border-width: 3rpx;
   border-style: solid;
 }
 
 .mini-ball-num {
-  font-size: 16rpx;
+  font-size: 14rpx;
   color: #000000;
   font-weight: bold;
 }

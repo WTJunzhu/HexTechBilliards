@@ -47,10 +47,10 @@ export const POCKET_POSITIONS: Vector2[] = [
 ]
 
 // 物理常数
-export const FRICTION = 0.985       // 每帧速度衰减（桌面摩擦）
-export const COLLISION_LOSS = 0.03  // 碰撞能量损失
-export const CUSHION_LOSS = 0.15    // 库边碰撞能量损失
-export const MIN_VELOCITY = 0.05    // 停止判定阈值
+export const FRICTION = 0.998       // 每子步进速度衰减（桌面摩擦，接近1=极小阻力）
+export const COLLISION_LOSS = 0.01  // 碰撞能量损失（极小）
+export const CUSHION_LOSS = 0.05    // 库边碰撞能量损失（极小）
+export const MIN_VELOCITY = 0.005   // 停止判定阈值（接近零）
 export const MAX_SHOT_POWER = 8    // 最大击球力度
 
 // 渲染缩放 - Canvas像素 / 游戏单位

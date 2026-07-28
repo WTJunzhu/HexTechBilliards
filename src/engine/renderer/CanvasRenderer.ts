@@ -59,8 +59,11 @@ export class CanvasRenderer {
     const totalWidth = TABLE_WIDTH + CUSHION_WIDTH * 2
     const totalHeight = TABLE_HEIGHT + CUSHION_WIDTH * 2
 
-    // 按宽度适配，留出上下 margin
-    this.scale = width / (totalWidth + 4) // 左右各留 2 游戏单位
+    // 计算缩放：让球桌完整显示在 canvas 中，不留多余 margin
+    // 分别按宽度和高度计算，取较小值确保不溢出
+    const scaleByWidth = width / totalWidth
+    const scaleByHeight = height / totalHeight
+    this.scale = Math.min(scaleByWidth, scaleByHeight) * 0.98 // 留 2% 呼吸边距
 
     // 计算球桌在 canvas 中的偏移（居中）
     const renderedWidth = totalWidth * this.scale
@@ -308,56 +311,75 @@ export class CanvasRenderer {
     const cueWidth = 1.5 * this.scale
 
     // 基础间距：球杆尖端到球表面的距离（像素）
-    const baseGap = BALL_RADIUS * this.scale * 0.8
+    // 这个值确保杆头始终在白球外部，清晰可见
+    const baseGap = BALL_RADIUS * this.scale * 1.5
     // 蓄力拉杆距离：力度越大，球杆越远离球
-    const pullBackDist = power * this.scale * 3
+    const pullBackDist = power * this.scale * 4
 
     // 击球动画：球杆冲向球
-    let animGap = 0
+    let animOffset = 0
     if (isShooting) {
-      // 动画前半段：从当前位置冲到球表面 (gap → 0)
-      // 动画后半段：球杆跟随球一小段
+      // 动画：从当前位置（远离球）冲到球表面附近
       if (shootProgress < 0.5) {
-        // 线性插值从 (baseGap + pullBackDist) 到 0
+        // 前半段：向后拉杆（拉得更远，蓄力感）
         const t = shootProgress / 0.5
-        animGap = -(baseGap + pullBackDist) * t // 负值=向前冲
+        animOffset = pullBackDist * t * 0.5 // 向后多拉一点
       } else {
-        // 球杆已经接触球，保持 gap=0
-        animGap = -(baseGap + pullBackDist)
+        // 后半段：快速前冲到球附近
+        const t = (shootProgress - 0.5) / 0.5
+        animOffset = pullBackDist * 0.5 - (baseGap + pullBackDist * 0.5) * t
       }
     }
 
-    // 球杆尖端离白球中心的距离（像素）
-    const tipDistFromCenter = BALL_RADIUS * this.scale + baseGap + pullBackDist + animGap
+    // 球杆尖端（杆头）到白球中心的距离
+    // 方向：angle + PI = 白球后方（远离目标方向）
+    const tipDistFromCenter = BALL_RADIUS * this.scale + baseGap + pullBackDist + animOffset
 
-    // 球杆方向：从白球中心指向球杆尾部（angle + PI）
+    // 球杆放置位置：从白球中心向 angle+PI 方向偏移 tipDistFromCenter
     const offsetX = Math.cos(angle + Math.PI) * tipDistFromCenter
     const offsetY = Math.sin(angle + Math.PI) * tipDistFromCenter
 
     ctx.save()
     ctx.translate(cuePos.x + offsetX, cuePos.y + offsetY)
-    ctx.rotate(angle)
+    // 关键修复：rotate(angle + PI) 让 x轴正方向指向白球后方
+    // 这样 x=0 是杆头（靠近白球），x=cueLength 是杆尾（远离白球）
+    ctx.rotate(angle + Math.PI)
 
-    // 球杆主体（从细端到粗端）
+    // 球杆主体（从杆头细端到杆尾粗端）
     const gradient = ctx.createLinearGradient(0, 0, cueLength, 0)
-    gradient.addColorStop(0, '#4E342E')     // 细端（击球端）- 深棕色
-    gradient.addColorStop(0.05, '#FFE0B2')  // 皮头白色
-    gradient.addColorStop(0.1, '#EFEBE9')  // 接口铜色
-    gradient.addColorStop(0.3, '#D7CCC8')   // 前节浅木色
-    gradient.addColorStop(0.7, '#8D6E63')   // 后节深木色
-    gradient.addColorStop(1, '#5D4037')     // 底部深棕色
+    gradient.addColorStop(0, '#3E2723')    // 杆头（细端）- 深棕色皮头
+    gradient.addColorStop(0.03, '#FFE0B2') // 皮头白色
+    gradient.addColorStop(0.08, '#8D6E63') // 接口铜环
+    gradient.addColorStop(0.25, '#D7CCC8') // 前节浅木色
+    gradient.addColorStop(0.6, '#A1887F')  // 中段木色
+    gradient.addColorStop(0.85, '#5D4037') // 后节深木色
+    gradient.addColorStop(1, '#3E2723')    // 杆尾（粗端）- 最深棕色
 
     ctx.beginPath()
-    ctx.moveTo(0, -cueWidth / 6)          // 尖端细
-    ctx.lineTo(cueLength, -cueWidth / 2)   // 尾端粗
+    // 杆头（细端，靠近白球）
+    ctx.moveTo(0, -cueWidth / 8)
+    ctx.lineTo(cueLength * 0.15, -cueWidth / 6)
+    ctx.lineTo(cueLength * 0.3, -cueWidth / 5)
+    ctx.lineTo(cueLength * 0.6, -cueWidth / 3)
+    // 杆尾（粗端）
+    ctx.lineTo(cueLength, -cueWidth / 2)
     ctx.lineTo(cueLength, cueWidth / 2)
-    ctx.lineTo(0, cueWidth / 6)
+    ctx.lineTo(cueLength * 0.6, cueWidth / 3)
+    ctx.lineTo(cueLength * 0.3, cueWidth / 5)
+    ctx.lineTo(cueLength * 0.15, cueWidth / 6)
+    ctx.lineTo(0, cueWidth / 8)
     ctx.closePath()
     ctx.fillStyle = gradient
     ctx.fill()
-    ctx.strokeStyle = 'rgba(0,0,0,0.3)'
+    ctx.strokeStyle = 'rgba(0,0,0,0.2)'
     ctx.lineWidth = 0.5
     ctx.stroke()
+
+    // 杆头白色皮头标记
+    ctx.beginPath()
+    ctx.arc(0, 0, cueWidth / 10, 0, Math.PI * 2)
+    ctx.fillStyle = '#FFE0B2'
+    ctx.fill()
 
     ctx.restore()
   }
