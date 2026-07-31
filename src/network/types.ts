@@ -47,6 +47,11 @@ export interface WebRTCIceCandidateMessage {
   sdpMLineIndex: number | null
 }
 
+export interface RelayGameMessage {
+  type: 'relay_game_message'
+  message: GameMessage
+}
+
 export type ClientMessage =
   | CreateRoomMessage
   | JoinRoomMessage
@@ -56,6 +61,7 @@ export type ClientMessage =
   | WebRTCOfferMessage
   | WebRTCAnswerMessage
   | WebRTCIceCandidateMessage
+  | RelayGameMessage
 
 // ---- 服务器 → 客户端 ----
 
@@ -125,6 +131,12 @@ export interface WebRTCIceCandidateRelayMessage {
   sdpMLineIndex: number | null
 }
 
+export interface RelayGameMessageReceived {
+  type: 'relay_game_message'
+  fromPlayerId: string
+  message: GameMessage
+}
+
 export type ServerMessage =
   | RoomCreatedMessage
   | RoomJoinedMessage
@@ -138,6 +150,7 @@ export type ServerMessage =
   | WebRTCOfferRelayMessage
   | WebRTCAnswerRelayMessage
   | WebRTCIceCandidateRelayMessage
+  | RelayGameMessageReceived
 
 // ---- P2P 游戏消息 ----
 
@@ -171,6 +184,27 @@ export interface StateChecksumMessage {
   turnCount: number
 }
 
+export interface GameSnapshotMessage {
+  type: 'game_snapshot'
+  turnCount: number
+  currentPlayerIndex: number
+  phase: 'break_shot' | 'aiming' | 'ball_in_hand' | 'game_over'
+  groupsAssigned: boolean
+  players: Array<{
+    index: number
+    group: 'none' | 'solid' | 'stripe'
+    pocketedCount: number
+  }>
+  winner: number | null
+  winReason: string | null
+  balls: Array<{
+    number: number
+    position: { x: number; y: number }
+    velocity: { x: number; y: number }
+    state: 'active' | 'pocketed' | 'placing'
+  }>
+}
+
 export type GameMessage =
   | ShootMessage
   | PlaceCueBallMessage
@@ -178,6 +212,7 @@ export type GameMessage =
   | RematchRequestMessage
   | RematchAcceptMessage
   | StateChecksumMessage
+  | GameSnapshotMessage
 
 // ---- 通用 ----
 

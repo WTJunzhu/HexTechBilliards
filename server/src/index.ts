@@ -128,6 +128,9 @@ function handleMessage(conn: PlayerConnection, msg: ClientMessage): void {
     case 'webrtc_ice_candidate':
       handleWebRTCRelay(conn, msg)
       break
+    case 'relay_game_message':
+      handleGameMessageRelay(conn, msg.message)
+      break
     default:
       send(conn, { type: 'error', message: `Unknown message type: ${(msg as any).type}` })
   }
@@ -291,6 +294,20 @@ function handleWebRTCRelay(conn: PlayerConnection, msg: ClientMessage): void {
   if (opponent) {
     send(opponent, relayMsg)
   }
+}
+
+// ---- WebSocket 游戏消息中转 ----
+function handleGameMessageRelay(conn: PlayerConnection, message: import('./types').GameMessage): void {
+  if (!conn.roomId) return
+  const room = roomManager.getRoomByPlayer(conn.playerId)
+  const opponent = room?.getOpponent(conn.playerId)
+  if (!opponent) return
+
+  send(opponent, {
+    type: 'relay_game_message',
+    fromPlayerId: conn.playerId,
+    message,
+  })
 }
 
 // ---- 断线处理 ----

@@ -200,4 +200,8 @@ export class SignalingClient {
       sdpMLineIndex: candidate.sdpMLineIndex,
     })
   }
+
+  relayGameMessage(message: import('./types').GameMessage): boolean {
+    return this.send({ type: 'relay_game_message', message })
+  }
 }

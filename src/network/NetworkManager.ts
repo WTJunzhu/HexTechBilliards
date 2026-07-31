@@ -138,6 +138,7 @@ export class NetworkManager {
     this._opponentId = null
     this._opponentName = null
     this._myPlayerIndex = -1
+    this._useWebSocketFallback = false
   }
 
   /** 准备 */
@@ -166,13 +167,8 @@ export class NetworkManager {
     if (!this._useWebSocketFallback && this.peer.isConnected) {
       return this.peer.send(msg)
     }
-    // WebSocket 回退：通过信令服务器中转
-    // 这里我们把游戏消息包装成一种特殊信令消息
-    // 服务器会原样转发给对手
-    if (this._useWebSocketFallback && this.signaling.state === 'connected') {
-      // 在实际实现中，服务器需要支持 relay_game_message 类型
-      // 暂时用简单方式：直接通过 DataChannel or fallback
-      return this.signaling.send(msg as any as import('./types').ClientMessage)
+    if (this.signaling.state === 'connected') {
+      return this.signaling.relayGameMessage(msg)
     }
     return false
   }
@@ -248,6 +244,10 @@ export class NetworkManager {
 
       case 'error':
         this.emit({ type: 'error', message: msg.message })
+        break
+
+      case 'relay_game_message':
+        this.emit({ type: 'game_message', message: msg.message })
         break
 
       // WebRTC 信令

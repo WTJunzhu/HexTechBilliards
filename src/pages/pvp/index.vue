@@ -64,22 +64,6 @@
       </view>
 
       <view class="bottom-controls">
-        <!-- 击球部位选择器 -->
-        <view class="spin-selector">
-          <text class="spin-label">击球部位</text>
-          <view class="spin-grid">
-            <view class="spin-cell" :class="{ active: spinType === 'topLeft' }" @tap="spinType = 'topLeft'"></view>
-            <view class="spin-cell" :class="{ active: spinType === 'top' }" @tap="spinType = 'top'"></view>
-            <view class="spin-cell" :class="{ active: spinType === 'topRight' }" @tap="spinType = 'topRight'"></view>
-            <view class="spin-cell" :class="{ active: spinType === 'left' }" @tap="spinType = 'left'"></view>
-            <view class="spin-center" :class="{ active: spinType === 'center' }" @tap="spinType = 'center'"></view>
-            <view class="spin-cell" :class="{ active: spinType === 'right' }" @tap="spinType = 'right'"></view>
-            <view class="spin-cell" :class="{ active: spinType === 'bottomLeft' }" @tap="spinType = 'bottomLeft'"></view>
-            <view class="spin-cell" :class="{ active: spinType === 'bottom' }" @tap="spinType = 'bottom'"></view>
-            <view class="spin-cell" :class="{ active: spinType === 'bottomRight' }" @tap="spinType = 'bottomRight'"></view>
-          </view>
-        </view>
-
         <!-- 已进球展示 -->
         <view class="pocketed-display">
           <view class="pocketed-row">
@@ -104,13 +88,37 @@
       </view>
     </view>
 
+    <!-- 本地双人换手确认：遮罩会阻断桌面上的所有操作 -->
+    <view class="turn-handoff-overlay" v-if="showTurnHandoff">
+      <view class="turn-handoff-card">
+        <text class="turn-handoff-eyebrow">本地双人对战</text>
+        <text class="turn-handoff-title">轮到 {{ players[currentPlayerIndex].name }}</text>
+        <text class="turn-handoff-copy">请将设备交给对方后，再继续操作。</text>
+        <view class="turn-handoff-btn" @tap="confirmTurnHandoff">
+          <text>我已准备好</text>
+        </view>
+      </view>
+    </view>
+
     <!-- 游戏结束弹窗 -->
     <view class="game-over-overlay" v-if="phase === 'game_over'">
       <view class="game-over-card">
         <text class="game-over-title">游戏结束</text>
-        <text class="game-over-winner">{{ players[winner!].name }} 获胜!</text>
+        <text class="game-over-winner" v-if="winner !== null">{{ players[winner].name }} 获胜!</text>
         <text class="game-over-reason">{{ winReason }}</text>
-        <view class="game-over-btn" @tap="restart" v-if="!isOnlineMode">
+        <view class="game-over-status" v-if="isOnlineMode && opponentDisconnected">
+          <text>对手已断开连接</text>
+        </view>
+        <view class="game-over-btn" v-else-if="isOnlineMode && opponentRequestedRematch" @tap="acceptRematch">
+          <text style="color: #fff; font-size: 30rpx;">接受再来一局</text>
+        </view>
+        <view class="game-over-status" v-else-if="isOnlineMode && rematchRequested">
+          <text>已发送请求，等待对手确认...</text>
+        </view>
+        <view class="game-over-btn" v-else-if="isOnlineMode" @tap="requestRematch">
+          <text style="color: #fff; font-size: 30rpx;">请求再来一局</text>
+        </view>
+        <view class="game-over-btn" @tap="restart" v-else>
           <text style="color: #fff; font-size: 30rpx;">再来一局</text>
         </view>
         <view class="game-over-btn secondary" @tap="goHome">
@@ -122,21 +130,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useGameStore } from '../../stores/gameStore'
 import { CanvasRenderer } from '../../engine/renderer/CanvasRenderer'
 import { CueController } from '../../engine/input/CueController'
+import { AudioEngine } from '../../engine/audio/AudioEngine'
 import { Vector2 } from '../../engine/physics/Vector2'
-import { TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH, BallColor, isSolidBall, isStripeBall } from '../../engine/physics/TableSpec'
-
-type SpinType = 'center' | 'top' | 'bottom' | 'left' | 'right' | 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
+import { TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH, isSolidBall, isStripeBall } from '../../engine/physics/TableSpec'
 
 const gameStore = useGameStore()
 const renderer = new CanvasRenderer()
 const cueController = new CueController()
+const audioEngine = new AudioEngine()
 
 const powerPercent = ref(0)
-const spinType = ref<SpinType>('center')
+const showTurnHandoff = ref(false)
+const handoffReady = ref(false)
 const canvasWrapper = ref<HTMLElement | null>(null)
 let animationFrameId = 0
 let canvasReady = false
@@ -157,6 +166,9 @@ const foulMessage = gameStore.foulMessage
 const isOnlineMode = gameStore.isOnlineMode
 const myPlayerIndex = gameStore.myPlayerIndex
 const networkStatus = gameStore.networkStatus
+const opponentDisconnected = gameStore.opponentDisconnected
+const rematchRequested = gameStore.rematchRequested
+const opponentRequestedRematch = gameStore.opponentRequestedRematch
 
 /** 在线模式下是否是我的回合 */
 const isMyTurnInOnline = computed(() => {
@@ -166,6 +178,7 @@ const isMyTurnInOnline = computed(() => {
 
 /** 是否可以瞄准/击球（在线模式下仅我的回合可操作） */
 const canAim = computed(() => {
+  if (showTurnHandoff.value) return false
   if (!isOnlineMode.value) return true
   return gameStore.isMyTurn()
 })
@@ -182,7 +195,7 @@ const networkStatusText = computed(() => {
 /** 阶段提示文字 */
 const phaseHint = computed(() => {
   switch (phase.value) {
-    case 'moving': return '球在运动中...'
+    case 'balls_moving': return '球在运动中...'
     case 'ball_in_hand': return isMyTurnInOnline.value ? '点击桌面放置白球' : '对手放置白球...'
     case 'game_over': return '游戏结束'
     default: return ''
@@ -220,6 +233,8 @@ function parsePageOptions() {
 
 onMounted(() => {
   parsePageOptions()
+  handoffReady.value = true
+  showTurnHandoff.value = false
   nextTick(() => {
     setTimeout(() => {
       createCanvas()
@@ -275,6 +290,9 @@ function createCanvas() {
   scale = logicalWidth / (totalTableWidth + 4)
 
   renderer.init(ctx, logicalWidth, logicalHeight)
+  gameStore.physicsWorld.clearHooks()
+  gameStore.physicsWorld.addPostCollisionHook((ball1, ball2) => audioEngine.playBallCollision(ball1, ball2))
+  gameStore.physicsWorld.addPocketHook(() => audioEngine.playPocket())
   canvasReady = true
 
   canvasWrapper.value.appendChild(canvasEl)
@@ -297,6 +315,7 @@ function createCanvas() {
     if (currentPhase === 'aiming' || currentPhase === 'break_shot') {
       // 启动击球动画
       renderer.startShootAnimation()
+      audioEngine.playCueShot(power)
       gameStore.shoot(power, angle)
     }
   }
@@ -332,7 +351,6 @@ function gameLoop() {
       renderer.cueStick.position = cueBall!.position
       renderer.cueStick.angle = cueController.aimAngle
       renderer.cueStick.power = cueController.power
-      renderer.spinType = spinType.value
     } else {
       if (!renderer.cueStick.shooting) {
         renderer.cueStick.visible = false
@@ -348,6 +366,7 @@ function gameLoop() {
 // === 输入处理 ===
 
 function onMouseDown(e: MouseEvent) {
+  void audioEngine.unlock()
   if (isOnlineMode.value && !gameStore.isMyTurn()) return
   const rect = (e.target as HTMLElement).getBoundingClientRect()
   handleInputStart(new Vector2(e.clientX - rect.left, e.clientY - rect.top))
@@ -365,6 +384,7 @@ function onMouseUp() {
 }
 
 function onTouchStart(e: TouchEvent) {
+  void audioEngine.unlock()
   if (isOnlineMode.value && !gameStore.isMyTurn()) return
   e.preventDefault()
   const rect = (e.target as HTMLElement).getBoundingClientRect()
@@ -386,6 +406,7 @@ function onTouchEnd() {
 }
 
 function handleInputStart(pixelPos: Vector2) {
+  if (showTurnHandoff.value) return
   const gamePos = renderer.toGame(pixelPos)
   const currentPhase = gameStore.phase
 
@@ -401,6 +422,7 @@ function handleInputStart(pixelPos: Vector2) {
 }
 
 function handleInputMove(pixelPos: Vector2) {
+  if (showTurnHandoff.value) return
   const currentPhase = gameStore.phase
   if (currentPhase !== 'aiming' && currentPhase !== 'break_shot') return
 
@@ -418,13 +440,32 @@ function handleInputMove(pixelPos: Vector2) {
 }
 
 function handleInputEnd() {
+  if (showTurnHandoff.value) return
   if (cueController.isAiming || cueController.isPowering) {
     cueController.endShot()
   }
 }
 
+function confirmTurnHandoff() {
+  showTurnHandoff.value = false
+}
+
+watch(currentPlayerIndex, (nextPlayer, previousPlayer) => {
+  if (isOnlineMode.value || !handoffReady.value || nextPlayer === previousPlayer) return
+  showTurnHandoff.value = true
+})
+
 function restart() {
+  showTurnHandoff.value = false
   gameStore.initGame()
+}
+
+function requestRematch() {
+  gameStore.requestRematch()
+}
+
+function acceptRematch() {
+  gameStore.acceptRematch()
 }
 
 function goHome() {
@@ -564,7 +605,7 @@ function goHome() {
   flex-shrink: 0;
   background-color: rgba(20, 20, 40, 0.95);
   border-top: 1rpx solid rgba(100, 100, 255, 0.15);
-  padding: 6rpx 20rpx 10rpx;
+  padding: 6rpx 20rpx calc(10rpx + env(safe-area-inset-bottom));
 }
 
 /* 蓄力条 */
@@ -609,58 +650,7 @@ function goHome() {
 /* 底部控制区 */
 .bottom-controls {
   display: flex;
-  gap: 20rpx;
   padding-top: 8rpx;
-}
-
-/* 击球部位选择器 */
-.spin-selector {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6rpx;
-}
-
-.spin-label {
-  font-size: 18rpx;
-  color: #8888aa;
-  margin-bottom: 2rpx;
-}
-
-.spin-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-  gap: 3rpx;
-  width: 110rpx;
-  height: 110rpx;
-}
-
-.spin-cell {
-  width: 34rpx;
-  height: 34rpx;
-  border-radius: 3rpx;
-  background-color: #1a1a30;
-  border: 1rpx solid #333355;
-}
-
-.spin-cell.active {
-  background-color: rgba(100, 100, 255, 0.4);
-  border-color: rgba(100, 100, 255, 0.8);
-}
-
-.spin-center {
-  width: 34rpx;
-  height: 34rpx;
-  border-radius: 17rpx;
-  background-color: #1a1a30;
-  border: 2rpx solid #444466;
-}
-
-.spin-center.active {
-  background-color: rgba(255, 255, 255, 0.9);
-  border-color: #ffffff;
 }
 
 /* 已进球展示 */
@@ -713,6 +703,63 @@ function goHome() {
   font-weight: bold;
 }
 
+/* 本地双人换手确认 */
+.turn-handoff-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40rpx;
+  background: rgba(4, 7, 16, 0.9);
+  backdrop-filter: blur(8px);
+}
+
+.turn-handoff-card {
+  width: min(560rpx, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 54rpx 42rpx 42rpx;
+  border: 2rpx solid rgba(123, 158, 255, 0.4);
+  border-radius: 24rpx;
+  background: linear-gradient(145deg, #202445, #11152b);
+  box-shadow: 0 20rpx 60rpx rgba(0, 0, 0, 0.45);
+}
+
+.turn-handoff-eyebrow {
+  color: #8ea8ff;
+  font-size: 22rpx;
+  letter-spacing: 3rpx;
+}
+
+.turn-handoff-title {
+  margin-top: 18rpx;
+  color: #f1f4ff;
+  font-size: 42rpx;
+  font-weight: bold;
+}
+
+.turn-handoff-copy {
+  margin-top: 18rpx;
+  color: #adb6d9;
+  font-size: 25rpx;
+  text-align: center;
+}
+
+.turn-handoff-btn {
+  width: 100%;
+  margin-top: 44rpx;
+  padding: 22rpx 0;
+  border-radius: 12rpx;
+  background: linear-gradient(90deg, #315ccf, #5a7cf0);
+  color: #fff;
+  font-size: 30rpx;
+  font-weight: bold;
+  text-align: center;
+}
+
 /* 游戏结束弹窗 */
 .game-over-overlay {
   position: fixed;
@@ -753,6 +800,13 @@ function goHome() {
   font-size: 24rpx;
   color: #8888aa;
   margin-bottom: 40rpx;
+}
+
+.game-over-status {
+  margin-bottom: 28rpx;
+  color: #aeb8dd;
+  font-size: 24rpx;
+  text-align: center;
 }
 
 .game-over-btn {

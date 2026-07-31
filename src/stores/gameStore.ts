@@ -7,7 +7,7 @@ import { RuleEngine } from '../engine/game/RuleEngine'
 import { TABLE_WIDTH, TABLE_HEIGHT } from '../engine/physics/TableSpec'
 import { GamePhase as GP, BallGroup as BG, type Player as PlayerType, type TurnResult } from '../engine/game/GameState'
 import { getNetworkManager } from '../network/NetworkManager'
-import type { GameMessage, NetworkEvent } from '../network/types'
+import type { GameMessage, GameSnapshotMessage, NetworkEvent } from '../network/types'
 
 /**
  * 中式八球初始球位
@@ -112,6 +112,9 @@ export const useGameStore = defineStore('game', () => {
   const isOnlineMode = ref(false)
   const myPlayerIndex = ref(-1)  // 在线时我在房间的位置（0或1）
   const networkStatus = ref<'connected' | 'disconnected' | 'reconnecting'>('disconnected')
+  const opponentDisconnected = ref(false)
+  const rematchRequested = ref(false)
+  const opponentRequestedRematch = ref(false)
 
   // 网络管理器引用
   let networkManager: ReturnType<typeof getNetworkManager> | null = null
@@ -144,6 +147,9 @@ export const useGameStore = defineStore('game', () => {
     pocketedThisTurn.value = []
     turnResult.value = null
     foulMessage.value = null
+    opponentDisconnected.value = false
+    rematchRequested.value = false
+    opponentRequestedRematch.value = false
   }
 
   /**
@@ -186,6 +192,14 @@ export const useGameStore = defineStore('game', () => {
         }
         break
 
+      case 'opponent_left':
+        opponentDisconnected.value = true
+        winner.value = myPlayerIndex.value >= 0 ? myPlayerIndex.value : null
+        winReason.value = '对手已离开，本局判定为你获胜'
+        phase.value = GP.GAME_OVER
+        networkStatus.value = 'disconnected'
+        break
+
       case 'game_message':
         handleGameMessage(event.message)
         break
@@ -206,12 +220,15 @@ export const useGameStore = defineStore('game', () => {
         break
 
       case 'state_checksum':
-        // 校验和比对
+        // 校验和仅做提前预警；房主会在回合结算时发送完整快照进行最终校正。
         const localChecksum = computeChecksum(physicsWorld.balls)
         if (localChecksum !== msg.checksum) {
           console.warn(`[Online] State drift detected at turn ${msg.turnCount}: local=${localChecksum}, remote=${msg.checksum}`)
-          // TODO: 状态纠正逻辑（以房主状态为准）
         }
+        break
+
+      case 'game_snapshot':
+        applyGameSnapshot(msg)
         break
 
       case 'game_ready':
@@ -219,11 +236,11 @@ export const useGameStore = defineStore('game', () => {
         break
 
       case 'rematch_request':
-        // TODO: 再来一局请求
+        opponentRequestedRematch.value = true
         break
 
       case 'rematch_accept':
-        // TODO: 再来一局确认
+        initGame()
         break
     }
   }
@@ -328,6 +345,7 @@ export const useGameStore = defineStore('game', () => {
       winner.value = winResult.winner
       winReason.value = winResult.reason
       phase.value = GP.GAME_OVER
+      broadcastOnlineState()
       return
     }
 
@@ -339,6 +357,7 @@ export const useGameStore = defineStore('game', () => {
       }
       phase.value = GP.BALL_IN_HAND
       foulMessage.value = result.foulReason || '犯规！对手自由球'
+      broadcastOnlineState()
       return
     }
 
@@ -358,19 +377,88 @@ export const useGameStore = defineStore('game', () => {
     turnCount.value++
     phase.value = GP.AIMING
 
-    // 在线模式：回合结束时发送校验和
-    if (isOnlineMode.value) {
-      const checksum = computeChecksum(physicsWorld.balls)
-      networkManager?.sendGameMessage({
-        type: 'state_checksum',
-        checksum,
-        turnCount: turnCount.value,
-      })
-    }
+    broadcastOnlineState()
 
     // 清除回合数据
     firstHitBallThisTurn.value = null
     pocketedThisTurn.value = []
+  }
+
+  function broadcastOnlineState(): void {
+    if (!isOnlineMode.value) return
+    networkManager?.sendGameMessage({
+      type: 'state_checksum',
+      checksum: computeChecksum(physicsWorld.balls),
+      turnCount: turnCount.value,
+    })
+    if (networkManager?.isHost) {
+      networkManager.sendGameMessage(createGameSnapshot())
+    }
+  }
+
+  /** 请求在线再来一局，等待对手确认。 */
+  function requestRematch(): void {
+    if (!isOnlineMode.value || opponentDisconnected.value || rematchRequested.value) return
+    rematchRequested.value = true
+    networkManager?.sendGameMessage({ type: 'rematch_request' })
+  }
+
+  /** 接受对手的再来一局请求，双方使用相同初始球局重置。 */
+  function acceptRematch(): void {
+    if (!isOnlineMode.value || !opponentRequestedRematch.value) return
+    networkManager?.sendGameMessage({ type: 'rematch_accept' })
+    initGame()
+  }
+
+  function createGameSnapshot(): GameSnapshotMessage {
+    return {
+      type: 'game_snapshot',
+      turnCount: turnCount.value,
+      currentPlayerIndex: currentPlayerIndex.value,
+      phase: phase.value as GameSnapshotMessage['phase'],
+      groupsAssigned: groupsAssigned.value,
+      players: players.value.map(player => ({
+        index: player.index,
+        group: player.group,
+        pocketedCount: player.pocketedCount,
+      })),
+      winner: winner.value,
+      winReason: winReason.value,
+      balls: physicsWorld.balls.map(ball => ({
+        number: ball.number,
+        position: { x: ball.position.x, y: ball.position.y },
+        velocity: { x: ball.velocity.x, y: ball.velocity.y },
+        state: ball.state,
+      })),
+    }
+  }
+
+  function applyGameSnapshot(snapshot: GameSnapshotMessage): void {
+    if (!isOnlineMode.value || snapshot.turnCount < turnCount.value) return
+
+    for (const snapshotBall of snapshot.balls) {
+      const ball = physicsWorld.balls.find(candidate => candidate.number === snapshotBall.number)
+      if (!ball) continue
+      ball.position = new Vector2(snapshotBall.position.x, snapshotBall.position.y)
+      ball.velocity = new Vector2(snapshotBall.velocity.x, snapshotBall.velocity.y)
+      ball.state = snapshotBall.state as BallState
+    }
+
+    currentPlayerIndex.value = snapshot.currentPlayerIndex
+    turnCount.value = snapshot.turnCount
+    groupsAssigned.value = snapshot.groupsAssigned
+    players.value.forEach(player => {
+      const snapshotPlayer = snapshot.players.find(candidate => candidate.index === player.index)
+      if (!snapshotPlayer) return
+      player.group = snapshotPlayer.group as BG
+      player.pocketedCount = snapshotPlayer.pocketedCount
+    })
+    winner.value = snapshot.winner
+    winReason.value = snapshot.winReason
+    phase.value = snapshot.phase as GP
+    firstHitBallThisTurn.value = null
+    pocketedThisTurn.value = []
+    foulMessage.value = null
   }
 
   /** 放置自由球（统一入口） */
@@ -414,6 +502,7 @@ export const useGameStore = defineStore('game', () => {
     foulMessage, aimAngle, shotPower,
     // 在线模式状态
     isOnlineMode, myPlayerIndex, networkStatus,
+    opponentDisconnected, rematchRequested, opponentRequestedRematch,
     // 引擎
     physicsWorld, ruleEngine,
     // 方法
@@ -422,5 +511,6 @@ export const useGameStore = defineStore('game', () => {
     firstHitBallThisTurn,
     // 在线模式方法
     initOnlineMode, leaveOnlineMode, isMyTurn,
+    requestRematch, acceptRematch,
   }
 })

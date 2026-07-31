@@ -13,7 +13,7 @@ import type { Ball } from '../physics/Ball'
 import {
   TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
   POCKET_POSITIONS, CORNER_POCKET_RADIUS, SIDE_POCKET_RADIUS,
-  BALL_RADIUS, BallColor, RENDER_SCALE, updateRenderScale,
+  BALL_RADIUS, BALL_DIAMETER, RENDER_SCALE, updateRenderScale,
 } from '../physics/TableSpec'
 import type { PhysicsWorld } from '../physics/PhysicsWorld'
 import type { ForceField } from '../physics/ForceField'
@@ -118,8 +118,8 @@ export class CanvasRenderer {
     // 绘制力场特效（海克斯效果视觉）
     this.drawForceFields(ctx)
 
-    // 绘制瞄准线
-    this.drawAimLine(ctx)
+    // 绘制瞄准线与预测轨迹
+    this.drawAimLine(ctx, world)
 
     // 绘制球
     for (const ball of world.balls) {
@@ -282,20 +282,119 @@ export class CanvasRenderer {
 
   // ==================== 瞄准线绘制 ====================
 
-  private drawAimLine(ctx: CanvasRenderingContext2D): void {
+  private drawAimLine(ctx: CanvasRenderingContext2D, world: PhysicsWorld): void {
     if (!this.aimLine) return
 
-    const start = this.toPixel(this.aimLine.start)
-    const end = this.toPixel(this.aimLine.end)
+    const origin = this.aimLine.start
+    const direction = this.aimLine.end.subtract(origin).normalized
+    if (direction.length === 0) return
 
+    const ballHit = this.findFirstBallHit(origin, direction, world)
+    const cushionHit = this.findCushionHit(origin, direction)
+
+    if (ballHit && ballHit.distance <= cushionHit.distance) {
+      this.drawDashedSegment(ctx, origin, ballHit.point, 'rgba(255,255,255,0.78)', 1.5)
+
+      // 等质量球的正碰预测：目标球沿两球中心连线前进，白球保留切线方向。
+      const normal = ballHit.ball.position.subtract(ballHit.point).normalized
+      const targetEnd = ballHit.ball.position.add(normal.multiply(5))
+      this.drawDashedSegment(ctx, ballHit.ball.position, targetEnd, 'rgba(255,211,77,0.9)', 1.8)
+
+      const tangentVelocity = direction.subtract(normal.multiply(direction.dot(normal)))
+      if (tangentVelocity.length > 0.08) {
+        const cueEnd = ballHit.point.add(tangentVelocity.normalized.multiply(3.5))
+        this.drawDashedSegment(ctx, ballHit.point, cueEnd, 'rgba(121,196,255,0.8)', 1.2)
+      }
+      this.drawPredictionMarker(ctx, ballHit.point, '#ffffff')
+      return
+    }
+
+    this.drawDashedSegment(ctx, origin, cushionHit.point, 'rgba(255,255,255,0.78)', 1.5)
+    const reflectedEnd = cushionHit.point.add(cushionHit.direction.multiply(6))
+    this.drawDashedSegment(ctx, cushionHit.point, reflectedEnd, 'rgba(121,196,255,0.8)', 1.4)
+    this.drawPredictionMarker(ctx, cushionHit.point, '#79c4ff')
+  }
+
+  private drawDashedSegment(
+    ctx: CanvasRenderingContext2D,
+    start: Vector2,
+    end: Vector2,
+    color: string,
+    width: number,
+  ): void {
+    const pixelStart = this.toPixel(start)
+    const pixelEnd = this.toPixel(end)
     ctx.beginPath()
-    ctx.moveTo(start.x, start.y)
-    ctx.lineTo(end.x, end.y)
-    ctx.strokeStyle = 'rgba(255,255,255,0.5)'
-    ctx.lineWidth = 1.5
-    ctx.setLineDash([5, 5])
+    ctx.moveTo(pixelStart.x, pixelStart.y)
+    ctx.lineTo(pixelEnd.x, pixelEnd.y)
+    ctx.strokeStyle = color
+    ctx.lineWidth = width
+    ctx.setLineDash([6, 5])
     ctx.stroke()
     ctx.setLineDash([])
+  }
+
+  private drawPredictionMarker(ctx: CanvasRenderingContext2D, position: Vector2, color: string): void {
+    const pixel = this.toPixel(position)
+    ctx.beginPath()
+    ctx.arc(pixel.x, pixel.y, Math.max(3, this.scale * 0.18), 0, Math.PI * 2)
+    ctx.fillStyle = color
+    ctx.fill()
+  }
+
+  private findFirstBallHit(origin: Vector2, direction: Vector2, world: PhysicsWorld): {
+    ball: Ball
+    point: Vector2
+    distance: number
+  } | null {
+    let closest: { ball: Ball; point: Vector2; distance: number } | null = null
+
+    for (const ball of world.balls) {
+      if (!ball.active || ball.position.equals(origin)) continue
+      const toBall = ball.position.subtract(origin)
+      const projectedDistance = toBall.dot(direction)
+      if (projectedDistance <= 0) continue
+
+      const perpendicularDistanceSq = toBall.lengthSq - projectedDistance * projectedDistance
+      const collisionRadius = BALL_DIAMETER
+      const discriminant = collisionRadius * collisionRadius - perpendicularDistanceSq
+      if (discriminant < 0) continue
+
+      const impactDistance = projectedDistance - Math.sqrt(discriminant)
+      if (impactDistance <= 0 || (closest && impactDistance >= closest.distance)) continue
+      closest = {
+        ball,
+        point: origin.add(direction.multiply(impactDistance)),
+        distance: impactDistance,
+      }
+    }
+
+    return closest
+  }
+
+  private findCushionHit(origin: Vector2, direction: Vector2): { point: Vector2; direction: Vector2; distance: number } {
+    const left = BALL_RADIUS
+    const right = TABLE_WIDTH - BALL_RADIUS
+    const top = BALL_RADIUS
+    const bottom = TABLE_HEIGHT - BALL_RADIUS
+    const candidates: { distance: number; normal: Vector2 }[] = []
+
+    if (direction.x > 0) candidates.push({ distance: (right - origin.x) / direction.x, normal: new Vector2(-1, 0) })
+    if (direction.x < 0) candidates.push({ distance: (left - origin.x) / direction.x, normal: new Vector2(1, 0) })
+    if (direction.y > 0) candidates.push({ distance: (bottom - origin.y) / direction.y, normal: new Vector2(0, -1) })
+    if (direction.y < 0) candidates.push({ distance: (top - origin.y) / direction.y, normal: new Vector2(0, 1) })
+
+    const hit = candidates
+      .filter(candidate => candidate.distance > 0)
+      .sort((a, b) => a.distance - b.distance)[0]
+
+    // direction 不可能为零；该兜底仅防止未来调用方传入非法数值。
+    if (!hit) return { point: origin, direction, distance: 0 }
+    return {
+      point: origin.add(direction.multiply(hit.distance)),
+      direction: direction.reflect(hit.normal).normalized,
+      distance: hit.distance,
+    }
   }
 
   // ==================== 球杆绘制 ====================
