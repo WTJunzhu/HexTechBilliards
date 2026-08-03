@@ -9,45 +9,52 @@ import { Vector2 } from './Vector2'
  * - 6个袋口: 四角 + 两侧中袋
  *
  * 游戏坐标系：以球桌左上角内侧为原点
- * 单位系统：1单位 = 球半径，但使用缩小比例让球在屏幕上可见
- * 
- * 真实比例：球桌 = 球直径的 ~44倍 → 球在屏幕上太小
- * 游戏比例：球桌 = 球直径的 ~12倍 → 球清晰可见
- * 比例系数 = 44/12 ≈ 3.67
- * 保持2:1的球桌长宽比
+ * 单位系统：1单位 = 球半径
+ *
+ * 真实比例：球桌 = 球直径的 ~44倍
+ * 游戏比例：球桌 = 球直径的 ~18倍 (36/2)
+ * 比例系数 = 44/18 ≈ 2.44
+ * 保持2:1的球桌长宽比，球在屏幕上仍清晰可见
  */
 
 // 球的参数
 export const BALL_RADIUS = 1       // 1单位 = 1个球半径
 export const BALL_DIAMETER = BALL_RADIUS * 2
 
-// 球桌参数（保持2:1比例，但缩小到适合屏幕显示的比例）
-// 真实比例44:22 → 游戏比例 24:12 = 2:1
-export const TABLE_WIDTH = 24      // 内径宽度（球半径单位）
-export const TABLE_HEIGHT = 12     // 内径高度（球半径单位）
+// 球桌参数（保持2:1比例）
+// 真实比例44:22 → 游戏比例 36:18 = 2:1
+export const TABLE_WIDTH = 36      // 内径宽度（球半径单位）
+export const TABLE_HEIGHT = 18     // 内径高度（球半径单位）
 
 // 库边（cushion）宽度
 export const CUSHION_WIDTH = 1.5   // 库边宽度
 
-// 袋口参数
-// 中式八球袋口比美式稍大
-// 角袋半径约 0.6 球直径
-// 中袋半径约 0.55 球直径
-export const CORNER_POCKET_RADIUS = 1.2 // 角袋半径
-export const SIDE_POCKET_RADIUS = 1.1    // 中袋半径
+// 袋口检测半径 — 球心距袋口中心 <= 此值即进袋
+// 中式八球袋口比美式稍大，需足够大使球进入袋口区域时被捕获
+// 角袋：豁口边缘(1.5) + 球半径(1.0)的斜边 ≈ 1.80，取 1.9 留余量
+// 中袋：豁口边缘(1.3) + 球半径(1.0)的斜边 ≈ 1.64，取 1.7 留余量
+export const CORNER_POCKET_RADIUS = 1.9 // 角袋检测半径
+export const SIDE_POCKET_RADIUS = 1.7    // 中袋检测半径
+
+// 库边袋口豁口半宽 — 库边在袋口附近打开的缺口半宽
+// 球进入此区域时库边不反弹，可滚入袋口
+// 必须 <= 对应袋口检测半径，确保豁口内的球都能被捕获
+export const CORNER_MOUTH_HALF_WIDTH = 1.5 // 角袋豁口半宽
+export const SIDE_MOUTH_HALF_WIDTH = 1.3   // 中袋豁口半宽
 
 // 袋口位置（球桌内侧坐标）
+// 角袋位于球桌四角；中袋位于长边库线上（非桌外）
 export const POCKET_POSITIONS: Vector2[] = [
-  new Vector2(0, 0),                                       // 左上角袋
-  new Vector2(TABLE_WIDTH / 2, -CUSHION_WIDTH * 0.3),     // 上中袋
-  new Vector2(TABLE_WIDTH, 0),                              // 右上角袋
-  new Vector2(0, TABLE_HEIGHT),                              // 左下角袋
-  new Vector2(TABLE_WIDTH / 2, TABLE_HEIGHT + CUSHION_WIDTH * 0.3), // 下中袋
-  new Vector2(TABLE_WIDTH, TABLE_HEIGHT),                    // 右下角袋
+  new Vector2(0, 0),                          // 左上角袋
+  new Vector2(TABLE_WIDTH / 2, 0),            // 上中袋
+  new Vector2(TABLE_WIDTH, 0),                // 右上角袋
+  new Vector2(0, TABLE_HEIGHT),              // 左下角袋
+  new Vector2(TABLE_WIDTH / 2, TABLE_HEIGHT),// 下中袋
+  new Vector2(TABLE_WIDTH, TABLE_HEIGHT),    // 右下角袋
 ]
 
 // 物理常数
-export const FRICTION = 0.998       // 每子步进速度衰减（桌面摩擦，接近1=极小阻力）
+export const FRICTION = 0.99      // 每帧速度衰减（桌面摩擦）
 export const COLLISION_LOSS = 0.01  // 碰撞能量损失（极小）
 export const CUSHION_LOSS = 0.05    // 库边碰撞能量损失（极小）
 export const MIN_VELOCITY = 0.005   // 停止判定阈值（接近零）

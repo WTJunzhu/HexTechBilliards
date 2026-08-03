@@ -17,7 +17,7 @@ import type { GameMessage, GameSnapshotMessage, NetworkEvent } from '../network/
  * - 三角形底边两角必须一全色一花色
  * - 三角形顶球在开球线上
  *
- * 使用缩放后的游戏坐标系：TABLE_WIDTH=24, TABLE_HEIGHT=12
+ * 使用缩放后的游戏坐标系：TABLE_WIDTH=36, TABLE_HEIGHT=18
  */
 function createInitialBalls(): Ball[] {
   const balls: Ball[] = []

@@ -1,10 +1,10 @@
 import type { Vector2 } from './Vector2'
 import type { Ball } from './Ball'
 import {
-  TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
+  TABLE_WIDTH, TABLE_HEIGHT,
   CORNER_POCKET_RADIUS, SIDE_POCKET_RADIUS,
   POCKET_POSITIONS, COLLISION_LOSS, CUSHION_LOSS, BALL_DIAMETER, BALL_RADIUS,
-  MIN_VELOCITY,
+  MIN_VELOCITY, CORNER_MOUTH_HALF_WIDTH, SIDE_MOUTH_HALF_WIDTH,
 } from './TableSpec'
 
 /**
@@ -236,30 +236,39 @@ export class PhysicsWorld {
 
     // 上库边
     if (ball.position.y - ball.radius < 0) {
-      ball.position.y = ball.radius
-      ball.velocity.y = -ball.velocity.y
-      collided = true
+      // 袋口豁口内不反弹，让球滚入袋口
+      if (!this.isInCushionGap(ball.position.x, 'top')) {
+        ball.position.y = ball.radius
+        ball.velocity.y = -ball.velocity.y
+        collided = true
+      }
     }
 
     // 下库边
     if (ball.position.y + ball.radius > TABLE_HEIGHT) {
-      ball.position.y = TABLE_HEIGHT - ball.radius
-      ball.velocity.y = -ball.velocity.y
-      collided = true
+      if (!this.isInCushionGap(ball.position.x, 'bottom')) {
+        ball.position.y = TABLE_HEIGHT - ball.radius
+        ball.velocity.y = -ball.velocity.y
+        collided = true
+      }
     }
 
     // 左库边
     if (ball.position.x - ball.radius < 0) {
-      ball.position.x = ball.radius
-      ball.velocity.x = -ball.velocity.x
-      collided = true
+      if (!this.isInCushionGap(ball.position.y, 'left')) {
+        ball.position.x = ball.radius
+        ball.velocity.x = -ball.velocity.x
+        collided = true
+      }
     }
 
     // 右库边
     if (ball.position.x + ball.radius > TABLE_WIDTH) {
-      ball.position.x = TABLE_WIDTH - ball.radius
-      ball.velocity.x = -ball.velocity.x
-      collided = true
+      if (!this.isInCushionGap(ball.position.y, 'right')) {
+        ball.position.x = TABLE_WIDTH - ball.radius
+        ball.velocity.x = -ball.velocity.x
+        collided = true
+      }
     }
 
     if (collided) {
@@ -271,6 +280,28 @@ export class PhysicsWorld {
         hook(ball)
       }
     }
+  }
+
+  /**
+   * 判断球在与某条库边垂直方向上的坐标是否落在袋口豁口内
+   * @param perpendicularCoord 球在与库边垂直方向上的坐标
+   *   - top/bottom 库边：传入 ball.position.x
+   *   - left/right 库边：传入 ball.position.y
+   * @param side 哪条库边
+   * @returns true 表示该位置在豁口内，库边应放行（不反弹）
+   */
+  private isInCushionGap(perpendicularCoord: number, side: 'top' | 'bottom' | 'left' | 'right'): boolean {
+    if (side === 'top' || side === 'bottom') {
+      // 长边库边：左角袋 + 中袋 + 右角袋 三个豁口
+      if (perpendicularCoord < CORNER_MOUTH_HALF_WIDTH) return true
+      if (perpendicularCoord > TABLE_WIDTH - CORNER_MOUTH_HALF_WIDTH) return true
+      if (Math.abs(perpendicularCoord - TABLE_WIDTH / 2) < SIDE_MOUTH_HALF_WIDTH) return true
+    } else {
+      // 短边库边（左/右）：仅两端角袋豁口，无中袋
+      if (perpendicularCoord < CORNER_MOUTH_HALF_WIDTH) return true
+      if (perpendicularCoord > TABLE_HEIGHT - CORNER_MOUTH_HALF_WIDTH) return true
+    }
+    return false
   }
 
   // ==================== 工具方法 ====================
