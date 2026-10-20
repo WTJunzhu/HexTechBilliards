@@ -17,7 +17,7 @@ export { CueController } from '../engine/input/CueController'
 import {
   TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
   BALL_RADIUS, BALL_DIAMETER,
-  CORNER_POCKET_RADIUS, SIDE_POCKET_RADIUS,
+  CORNER_JAW_OFFSET, SIDE_MOUTH_HALF_WIDTH,
 } from '../engine/physics/TableSpec'
 
 /** 游戏配置 */
@@ -26,8 +26,8 @@ export interface GameConfig {
   tableHeight: number
   cushionWidth: number
   ballRadius: number
-  cornerPocketRadius: number
-  sidePocketRadius: number
+  cornerJawOffset: number
+  sideMouthHalfWidth: number
 }
 
 /** 默认游戏配置（中式八球） */
@@ -36,6 +36,6 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   tableHeight: TABLE_HEIGHT,
   cushionWidth: CUSHION_WIDTH,
   ballRadius: BALL_RADIUS,
-  cornerPocketRadius: CORNER_POCKET_RADIUS,
-  sidePocketRadius: SIDE_POCKET_RADIUS,
+  cornerJawOffset: CORNER_JAW_OFFSET,
+  sideMouthHalfWidth: SIDE_MOUTH_HALF_WIDTH,
 }

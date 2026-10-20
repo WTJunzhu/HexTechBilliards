@@ -19,6 +19,9 @@ import type { GameMessage, GameSnapshotMessage, NetworkEvent } from '../network/
  *
  * 使用缩放后的游戏坐标系：TABLE_WIDTH=36, TABLE_HEIGHT=18
  */
+const RACK_GAP = 0.06
+const RACK_JITTER = 0.025
+
 function createInitialBalls(): Ball[] {
   const balls: Ball[] = []
 
@@ -28,7 +31,14 @@ function createInitialBalls(): Ball[] {
   // 三角形排列 - 顶球在球桌3/4处
   const startX = TABLE_WIDTH * 0.72
   const startY = TABLE_HEIGHT * 0.5
-  const spacing = 2.15 // 球间距（略大于直径，防止初始重叠）
+  // 真实球堆不可能绝对贴紧：完全贴紧时动量像牛顿摆一样只传给末端的球，开球散不开。
+  // 这里给每颗球加一点微小的固定偏移（同一套种子，联机双方结果一致）
+  const spacing = 2 + RACK_GAP
+  let seed = 20261020
+  const jitter = () => {
+    seed = (seed * 16807) % 2147483647
+    return (seed / 2147483647 - 0.5) * 2 * RACK_JITTER
+  }
 
   // 三角形位置（5行：1+2+3+4+5）
   const positions: { row: number; col: number; number: number }[] = [
@@ -57,7 +67,7 @@ function createInitialBalls(): Ball[] {
   for (const pos of positions) {
     const x = startX + pos.row * spacing * Math.cos(Math.PI / 6)
     const y = startY + (pos.col - pos.row / 2) * spacing
-    balls.push(new Ball(pos.number, new Vector2(x, y)))
+    balls.push(new Ball(pos.number, new Vector2(x + jitter(), y + jitter())))
   }
 
   return balls
@@ -505,12 +515,11 @@ export const useGameStore = defineStore('game', () => {
     return success
   }
 
-  /** 白球能否放在该位置（台面内、不与其他球重叠、不在袋口） */
+  /** 白球能否放在该位置（台面内、不在袋口、不与其他球重叠） */
   function isValidCueBallPosition(position: Vector2): boolean {
     const cueBall = physicsWorld.balls.find(b => b.isCue)
     return physicsWorld.isInsideTable(position)
       && !physicsWorld.isPositionOverlap(position, cueBall)
-      && !physicsWorld.isInsideAnyPocket(position)
   }
 
   /** 本地放置白球 */

@@ -29,29 +29,83 @@ export const TABLE_HEIGHT = 18     // 内径高度（球半径单位）
 // 库边（cushion）宽度
 export const CUSHION_WIDTH = 1.5   // 库边宽度
 
-// 袋口检测半径 — 球心距袋口中心 <= 此值即进袋
-// 中式八球袋口比美式稍大，需足够大使球进入袋口区域时被捕获
-// 角袋：豁口边缘(1.5) + 球半径(1.0)的斜边 ≈ 1.80，取 1.9 留余量
-// 中袋：豁口边缘(1.3) + 球半径(1.0)的斜边 ≈ 1.64，取 1.7 留余量
-export const CORNER_POCKET_RADIUS = 1.9 // 角袋检测半径
-export const SIDE_POCKET_RADIUS = 1.7    // 中袋检测半径
+// ==================== 袋口与库边几何 ====================
+//
+// 库边是一组线段，在袋口处断开，断点即袋角（jaw nose）。
+// 袋口由两个袋角之间的"袋口线"定义：球心越过袋口线达到捕获深度即落袋。
+// 球在越过之前仍可能撞到袋角被弹出，这就是真实台球里的"袋角拒球"。
+// 物理碰撞、落袋判定、绘制与自由球合法性都使用同一套数据。
 
-// 库边袋口豁口半宽 — 库边在袋口附近打开的缺口半宽
-// 球进入此区域时库边不反弹，可滚入袋口
-// 必须 <= 对应袋口检测半径，确保豁口内的球都能被捕获
-export const CORNER_MOUTH_HALF_WIDTH = 1.5 // 角袋豁口半宽
-export const SIDE_MOUTH_HALF_WIDTH = 1.3   // 中袋豁口半宽
+// 角袋：袋角距球桌角点的距离（沿库边）。袋口宽 = 该值 × √2 ≈ 3.4 个球半径
+export const CORNER_JAW_OFFSET = 2.4
+// 中袋：袋口半宽。袋口宽 3.6 个球半径（中式台球中袋略宽于角袋）
+export const SIDE_MOUTH_HALF_WIDTH = 1.8
+// 球心越过袋口线多深算落袋
+export const CORNER_CAPTURE_DEPTH = 0.5
+export const SIDE_CAPTURE_DEPTH = 0.35
 
-// 袋口位置（球桌内侧坐标）
-// 角袋位于球桌四角；中袋位于长边库线上（非桌外）
-export const POCKET_POSITIONS: Vector2[] = [
-  new Vector2(0, 0),                          // 左上角袋
-  new Vector2(TABLE_WIDTH / 2, 0),            // 上中袋
-  new Vector2(TABLE_WIDTH, 0),                // 右上角袋
-  new Vector2(0, TABLE_HEIGHT),              // 左下角袋
-  new Vector2(TABLE_WIDTH / 2, TABLE_HEIGHT),// 下中袋
-  new Vector2(TABLE_WIDTH, TABLE_HEIGHT),    // 右下角袋
+export interface PocketSpec {
+  /** 袋口线的两个端点（袋角） */
+  mouthA: Vector2
+  mouthB: Vector2
+  /** 袋口线指向台面内侧的单位法向量 */
+  inward: Vector2
+  /** 落袋所需越过袋口线的深度 */
+  captureDepth: number
+  /** 绘制用的袋洞圆（经过两个袋角，只画袋口线外侧部分） */
+  holeCenter: Vector2
+  holeRadius: number
+}
+
+function makePocket(mouthA: Vector2, mouthB: Vector2, inward: Vector2, captureDepth: number, holeCenter: Vector2): PocketSpec {
+  return { mouthA, mouthB, inward, captureDepth, holeCenter, holeRadius: holeCenter.distFrom(mouthA) }
+}
+
+const W = TABLE_WIDTH
+const H = TABLE_HEIGHT
+const J = CORNER_JAW_OFFSET
+const S = SIDE_MOUTH_HALF_WIDTH
+const D = Math.SQRT1_2
+// 袋洞圆心略偏向台内，使圆只在袋口线外露出合适的大小
+const CORNER_HOLE_INSET = 0.5
+const SIDE_HOLE_INSET = 0.3
+
+export const POCKETS: PocketSpec[] = [
+  makePocket(new Vector2(J, 0), new Vector2(0, J), new Vector2(D, D), CORNER_CAPTURE_DEPTH,
+    new Vector2(CORNER_HOLE_INSET, CORNER_HOLE_INSET)),                         // 左上角袋
+  makePocket(new Vector2(W / 2 - S, 0), new Vector2(W / 2 + S, 0), new Vector2(0, 1), SIDE_CAPTURE_DEPTH,
+    new Vector2(W / 2, SIDE_HOLE_INSET)),                                       // 上中袋
+  makePocket(new Vector2(W - J, 0), new Vector2(W, J), new Vector2(-D, D), CORNER_CAPTURE_DEPTH,
+    new Vector2(W - CORNER_HOLE_INSET, CORNER_HOLE_INSET)),                     // 右上角袋
+  makePocket(new Vector2(0, H - J), new Vector2(J, H), new Vector2(D, -D), CORNER_CAPTURE_DEPTH,
+    new Vector2(CORNER_HOLE_INSET, H - CORNER_HOLE_INSET)),                     // 左下角袋
+  makePocket(new Vector2(W / 2 - S, H), new Vector2(W / 2 + S, H), new Vector2(0, -1), SIDE_CAPTURE_DEPTH,
+    new Vector2(W / 2, H - SIDE_HOLE_INSET)),                                   // 下中袋
+  makePocket(new Vector2(W, H - J), new Vector2(W - J, H), new Vector2(-D, -D), CORNER_CAPTURE_DEPTH,
+    new Vector2(W - CORNER_HOLE_INSET, H - CORNER_HOLE_INSET)),                 // 右下角袋
 ]
+
+export interface CushionSegment {
+  a: Vector2
+  b: Vector2
+}
+
+/** 库边线段（球心到线段距离小于球半径即碰库；线段端点即袋角） */
+export const CUSHION_SEGMENTS: CushionSegment[] = [
+  { a: new Vector2(J, 0), b: new Vector2(W / 2 - S, 0) },         // 上库左段
+  { a: new Vector2(W / 2 + S, 0), b: new Vector2(W - J, 0) },     // 上库右段
+  { a: new Vector2(J, H), b: new Vector2(W / 2 - S, H) },         // 下库左段
+  { a: new Vector2(W / 2 + S, H), b: new Vector2(W - J, H) },     // 下库右段
+  { a: new Vector2(0, J), b: new Vector2(0, H - J) },             // 左库
+  { a: new Vector2(W, J), b: new Vector2(W, H - J) },             // 右库
+]
+
+/** 点到线段的最近点 */
+export function closestPointOnSegment(p: Vector2, a: Vector2, b: Vector2): Vector2 {
+  const ab = b.subtract(a)
+  const t = Math.max(0, Math.min(1, p.subtract(a).dot(ab) / ab.lengthSq))
+  return a.add(ab.multiply(t))
+}
 
 // 物理常数（时间单位：秒；速度单位：球半径/秒）
 // 物理以固定步长推进，与屏幕刷新率无关
@@ -63,8 +117,9 @@ export const PHYSICS_DT = 1 / 120
 export const ROLLING_DECEL = 5
 export const LINEAR_DRAG = 0.25
 
-export const COLLISION_LOSS = 0.01  // 碰撞能量损失（极小）
-export const CUSHION_LOSS = 0.05    // 库边碰撞能量损失（极小）
+// 恢复系数：只作用于碰撞法向速度，切向速度保留
+export const BALL_RESTITUTION = 0.95     // 球-球
+export const CUSHION_RESTITUTION = 0.8   // 球-库边（真实约 0.75～0.85）
 export const MIN_VELOCITY = 0.05    // 停止判定阈值
 export const MAX_SHOT_POWER = 64    // 满力击球初速度
 

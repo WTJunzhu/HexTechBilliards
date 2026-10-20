@@ -12,7 +12,7 @@ import { Vector2 } from '../physics/Vector2'
 import type { Ball } from '../physics/Ball'
 import {
   TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
-  POCKET_POSITIONS, CORNER_POCKET_RADIUS, SIDE_POCKET_RADIUS,
+  POCKETS, CUSHION_SEGMENTS,
   BALL_RADIUS, BALL_DIAMETER, RENDER_SCALE, updateRenderScale,
 } from '../physics/TableSpec'
 import type { PhysicsWorld } from '../physics/PhysicsWorld'
@@ -165,51 +165,61 @@ export class CanvasRenderer {
     ctx.fillStyle = '#3E2723'
     ctx.fillRect(ox, oy, totalWidth, totalHeight)
 
-    // 库边（稍浅的木色）
-    const cushionInset = CUSHION_WIDTH * this.scale * 0.1
-    ctx.fillStyle = '#5D4037'
-    ctx.fillRect(
-      ox + cushionInset, oy + cushionInset,
-      totalWidth - cushionInset * 2,
-      totalHeight - cushionInset * 2,
-    )
-
-    // 台面（绿色）
     const tableX = ox + CUSHION_WIDTH * this.scale
     const tableY = oy + CUSHION_WIDTH * this.scale
     const tableW = TABLE_WIDTH * this.scale
     const tableH = TABLE_HEIGHT * this.scale
+
+    // 库边胶条（深绿），袋口处被袋洞切开
+    const rail = CUSHION_WIDTH * this.scale * 0.55
+    ctx.fillStyle = '#145218'
+    ctx.fillRect(tableX - rail, tableY - rail, tableW + rail * 2, tableH + rail * 2)
+
+    // 袋洞：整圆先画黑，台面多边形再盖住袋口线以内的部分，只露出袋口线外侧
+    for (const pocket of POCKETS) {
+      const center = this.toPixel(pocket.holeCenter)
+      ctx.beginPath()
+      ctx.arc(center.x, center.y, pocket.holeRadius * this.scale, 0, Math.PI * 2)
+      ctx.fillStyle = '#0D0D0D'
+      ctx.fill()
+    }
+
+    // 台面（绿色）：库边线段的端点首尾相连，角袋处被袋口线切掉
+    const outline = this.feltOutline()
+    ctx.beginPath()
+    outline.forEach((point, i) => (i === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)))
+    ctx.closePath()
     ctx.fillStyle = '#1B5E20'
-    ctx.fillRect(tableX, tableY, tableW, tableH)
+    ctx.fill()
 
     // 台面细微纹理
+    ctx.save()
+    ctx.clip()
     ctx.fillStyle = 'rgba(0,0,0,0.05)'
     for (let i = 0; i < tableW; i += this.scale * 4) {
       ctx.fillRect(tableX + i, tableY, 1, tableH)
     }
+    ctx.restore()
 
-    // 袋口
-    for (let i = 0; i < POCKET_POSITIONS.length; i++) {
-      const pocketPos = this.toPixel(POCKET_POSITIONS[i])
-      const radius = (i === 1 || i === 4 ? SIDE_POCKET_RADIUS : CORNER_POCKET_RADIUS) * this.scale
+    // 库边边缘高光，袋角处的圆头即物理上的袋角
+    ctx.strokeStyle = 'rgba(160, 230, 160, 0.35)'
+    ctx.lineWidth = Math.max(1, this.scale * 0.12)
+    ctx.lineCap = 'round'
+    for (const segment of CUSHION_SEGMENTS) {
+      const a = this.toPixel(segment.a)
+      const b = this.toPixel(segment.b)
       ctx.beginPath()
-      ctx.arc(pocketPos.x, pocketPos.y, radius, 0, Math.PI * 2)
-      ctx.fillStyle = '#0D0D0D'
-      ctx.fill()
-
-      // 袋口圆角装饰
-      ctx.beginPath()
-      ctx.arc(pocketPos.x, pocketPos.y, radius + this.scale * 0.5, 0, Math.PI * 2)
-      ctx.strokeStyle = '#2C1810'
-      ctx.lineWidth = this.scale * 0.3
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
       ctx.stroke()
     }
+    ctx.lineCap = 'butt'
 
-    // 开球线（中式八球：距顶边1/4处画一条线）
-    const breakLineY = tableY + TABLE_HEIGHT * this.scale * 0.25
+    // 开球线：球桌横放，位于左侧 1/4 处的竖线（白球开球位置）
+    const breakLineX = tableX + tableW * 0.25
     ctx.beginPath()
-    ctx.moveTo(tableX, breakLineY)
-    ctx.lineTo(tableX + tableW, breakLineY)
+    ctx.moveTo(breakLineX, tableY)
+    ctx.lineTo(breakLineX, tableY + tableH)
     ctx.strokeStyle = 'rgba(255,255,255,0.15)'
     ctx.lineWidth = 1
     ctx.stroke()
@@ -221,6 +231,23 @@ export class CanvasRenderer {
     ctx.arc(centerX, centerY, this.scale * 0.5, 0, Math.PI * 2)
     ctx.fillStyle = 'rgba(255,255,255,0.2)'
     ctx.fill()
+  }
+
+  /** 台面轮廓：沿顺时针依次连接各袋口的两个袋角 */
+  private feltOutline(): Vector2[] {
+    // POCKETS 顺序：左上、上中、右上、左下、下中、右下；按顺时针重排
+    const order = [0, 1, 2, 5, 4, 3]
+    const points: Vector2[] = []
+    for (const index of order) {
+      const pocket = POCKETS[index]
+      // 每个袋口的两个袋角按顺时针方向排列（inward 逆时针旋转 90° 为前进方向）
+      const forward = new Vector2(-pocket.inward.y, pocket.inward.x).negate
+      const [first, second] = pocket.mouthB.subtract(pocket.mouthA).dot(forward) > 0
+        ? [pocket.mouthA, pocket.mouthB]
+        : [pocket.mouthB, pocket.mouthA]
+      points.push(this.toPixel(first), this.toPixel(second))
+    }
+    return points
   }
 
   // ==================== 球绘制 ====================

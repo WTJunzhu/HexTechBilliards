@@ -1,10 +1,9 @@
 import type { Vector2 } from './Vector2'
 import type { Ball } from './Ball'
 import {
-  TABLE_WIDTH, TABLE_HEIGHT,
-  CORNER_POCKET_RADIUS, SIDE_POCKET_RADIUS,
-  POCKET_POSITIONS, COLLISION_LOSS, CUSHION_LOSS, BALL_DIAMETER, BALL_RADIUS,
-  CORNER_MOUTH_HALF_WIDTH, SIDE_MOUTH_HALF_WIDTH,
+  TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
+  POCKETS, CUSHION_SEGMENTS, closestPointOnSegment,
+  BALL_RESTITUTION, CUSHION_RESTITUTION, BALL_DIAMETER, BALL_RADIUS,
   PHYSICS_DT, MAX_SUBSTEP_TRAVEL,
 } from './TableSpec'
 
@@ -24,9 +23,10 @@ export type PocketHook = (ball: Ball, pocketIndex: number) => void
  * 3. 执行顺序：位置更新 → 进袋 → 碰撞 → 库边 → 摩擦
  * 4. 摩擦为恒定减速 + 线性阻力（见 TableSpec），每个子步按时长积分
  *
- * 2D弹性碰撞原理：
- * - 等质量弹性碰撞：法线方向速度交换，切线方向速度不变
- * - 碰撞后分离（MTD修正）防止粘连
+ * 碰撞模型：
+ * - 球-球：等质量冲量碰撞，只作用于法向且仅在两球相互接近时生效；切向速度不变
+ * - 球-库边：库边为线段，端点即袋角；只衰减法向速度（CUSHION_RESTITUTION）
+ * - 进袋：球心越过袋口线达到捕获深度即落袋（几何定义见 TableSpec.POCKETS）
  */
 export class PhysicsWorld {
   public balls: Ball[] = []
@@ -112,25 +112,45 @@ export class PhysicsWorld {
   private handlePockets(): void {
     for (const ball of this.balls) {
       if (!ball.active) continue
+      const pocketIndex = this.findCapturingPocket(ball.position)
+      if (pocketIndex < 0) continue
 
-      for (let i = 0; i < POCKET_POSITIONS.length; i++) {
-        const pocketPos = POCKET_POSITIONS[i]
-        const pocketRadius = i === 1 || i === 4 // 中袋
-          ? SIDE_POCKET_RADIUS
-          : CORNER_POCKET_RADIUS
-
-        if (ball.position.distFrom(pocketPos) <= pocketRadius) {
-          ball.pocket()
-          this.pocketedBallsThisFrame.push(ball)
-
-          // 触发口袋Hook
-          for (const hook of this.pocketHooks) {
-            hook(ball, i)
-          }
-          break
-        }
+      ball.pocket()
+      this.pocketedBallsThisFrame.push(ball)
+      for (const hook of this.pocketHooks) {
+        hook(ball, pocketIndex)
       }
     }
+  }
+
+  /** 球心所在位置会被哪个袋口捕获，返回袋口索引，-1 表示不会 */
+  private findCapturingPocket(position: Vector2): number {
+    for (let i = 0; i < POCKETS.length; i++) {
+      const pocket = POCKETS[i]
+      if (this.depthPastMouth(position, i) > pocket.captureDepth) return i
+    }
+
+    // 兜底：球因数值误差越出台面外框，归入最近的袋口，避免球卡在桌外
+    const margin = CUSHION_WIDTH
+    if (position.x < -margin || position.x > TABLE_WIDTH + margin
+      || position.y < -margin || position.y > TABLE_HEIGHT + margin) {
+      let nearest = 0
+      for (let i = 1; i < POCKETS.length; i++) {
+        if (position.distFrom(POCKETS[i].holeCenter) < position.distFrom(POCKETS[nearest].holeCenter)) nearest = i
+      }
+      return nearest
+    }
+    return -1
+  }
+
+  /** 球心越过某个袋口线的深度（正数表示已越过，在袋口线外侧） */
+  private depthPastMouth(position: Vector2, pocketIndex: number): number {
+    const pocket = POCKETS[pocketIndex]
+    // 只考虑袋口线正对的区域，避免把其他方向的位置误判为越过
+    const along = pocket.mouthB.subtract(pocket.mouthA)
+    const t = position.subtract(pocket.mouthA).dot(along) / along.lengthSq
+    if (t < -0.25 || t > 1.25) return -Infinity
+    return -position.subtract(pocket.mouthA).dot(pocket.inward)
   }
 
   // ==================== 球-球碰撞 ====================
@@ -176,34 +196,19 @@ export class PhysicsWorld {
     }
 
     // 最小平移距离（MTD）分离重叠
-    const mtd = diff.multiply((BALL_DIAMETER - dist) / dist)
-    ball1.position = ball1.position.add(mtd.multiply(0.5))
-    ball2.position = ball2.position.subtract(mtd.multiply(0.5))
+    const normal = diff.normalized // 从 ball2 指向 ball1
+    const overlap = BALL_DIAMETER - dist
+    ball1.position = ball1.position.add(normal.multiply(overlap / 2))
+    ball2.position = ball2.position.subtract(normal.multiply(overlap / 2))
 
-    // 法线方向（从ball2指向ball1）
-    const normal = diff.normalized
-    // 切线方向
-    const tangent = normal.perpendicular
+    // 两球正在分离（或相对静止）时只分开、不交换速度，避免球堆抖动
+    const approachSpeed = ball1.velocity.subtract(ball2.velocity).dot(normal)
+    if (approachSpeed >= 0) return false
 
-    // 速度在法线和切线方向上的投影
-    const v1n = normal.dot(ball1.velocity)
-    const v1t = tangent.dot(ball1.velocity)
-    const v2n = normal.dot(ball2.velocity)
-    const v2t = tangent.dot(ball2.velocity)
-
-    // 等质量弹性碰撞：法线方向速度交换，切线方向速度不变
-    const newV1n = v2n
-    const newV1t = v1t
-    const newV2n = v1n
-    const newV2t = v2t
-
-    // 重建速度向量
-    ball1.velocity = normal.multiply(newV1n).add(tangent.multiply(newV1t))
-    ball2.velocity = normal.multiply(newV2n).add(tangent.multiply(newV2t))
-
-    // 碰撞能量损失
-    ball1.velocity = ball1.velocity.multiply(1 - COLLISION_LOSS)
-    ball2.velocity = ball2.velocity.multiply(1 - COLLISION_LOSS)
+    // 等质量冲量碰撞：e=1 时等价于法向速度交换
+    const impulse = normal.multiply(-(1 + BALL_RESTITUTION) / 2 * approachSpeed)
+    ball1.velocity = ball1.velocity.add(impulse)
+    ball2.velocity = ball2.velocity.subtract(impulse)
 
     // 记录碰撞事件（去重：同一对球每步只记录一次）
     const alreadyRecorded = this.collisionEventsThisFrame.some(
@@ -234,84 +239,40 @@ export class PhysicsWorld {
   private resolveCushionCollision(ball: Ball): void {
     let collided = false
 
-    // 上库边
-    if (ball.position.y - ball.radius < 0) {
-      // 袋口豁口内不反弹，让球滚入袋口
-      if (!this.isInCushionGap(ball.position.x, 'top')) {
-        ball.position.y = ball.radius
-        ball.velocity.y = -ball.velocity.y
-        collided = true
-      }
-    }
+    for (const segment of CUSHION_SEGMENTS) {
+      const closest = closestPointOnSegment(ball.position, segment.a, segment.b)
+      const diff = ball.position.subtract(closest)
+      const dist = diff.length
+      if (dist >= ball.radius || dist === 0) continue
 
-    // 下库边
-    if (ball.position.y + ball.radius > TABLE_HEIGHT) {
-      if (!this.isInCushionGap(ball.position.x, 'bottom')) {
-        ball.position.y = TABLE_HEIGHT - ball.radius
-        ball.velocity.y = -ball.velocity.y
-        collided = true
-      }
-    }
+      // 推出库边；线段端点处法向沿径向，即圆弧形袋角
+      const normal = diff.divide(dist)
+      ball.position = closest.add(normal.multiply(ball.radius))
 
-    // 左库边
-    if (ball.position.x - ball.radius < 0) {
-      if (!this.isInCushionGap(ball.position.y, 'left')) {
-        ball.position.x = ball.radius
-        ball.velocity.x = -ball.velocity.x
-        collided = true
-      }
-    }
-
-    // 右库边
-    if (ball.position.x + ball.radius > TABLE_WIDTH) {
-      if (!this.isInCushionGap(ball.position.y, 'right')) {
-        ball.position.x = TABLE_WIDTH - ball.radius
-        ball.velocity.x = -ball.velocity.x
+      const normalSpeed = ball.velocity.dot(normal)
+      if (normalSpeed < 0) {
+        ball.velocity = ball.velocity.subtract(normal.multiply((1 + CUSHION_RESTITUTION) * normalSpeed))
         collided = true
       }
     }
 
     if (collided) {
-      // 库边碰撞能量损失
-      ball.velocity = ball.velocity.multiply(1 - CUSHION_LOSS)
-
-      // 触发库边Hook
       for (const hook of this.cushionHooks) {
         hook(ball)
       }
     }
   }
 
-  /**
-   * 判断球在与某条库边垂直方向上的坐标是否落在袋口豁口内
-   * @param perpendicularCoord 球在与库边垂直方向上的坐标
-   *   - top/bottom 库边：传入 ball.position.x
-   *   - left/right 库边：传入 ball.position.y
-   * @param side 哪条库边
-   * @returns true 表示该位置在豁口内，库边应放行（不反弹）
-   */
-  private isInCushionGap(perpendicularCoord: number, side: 'top' | 'bottom' | 'left' | 'right'): boolean {
-    if (side === 'top' || side === 'bottom') {
-      // 长边库边：左角袋 + 中袋 + 右角袋 三个豁口
-      if (perpendicularCoord < CORNER_MOUTH_HALF_WIDTH) return true
-      if (perpendicularCoord > TABLE_WIDTH - CORNER_MOUTH_HALF_WIDTH) return true
-      if (Math.abs(perpendicularCoord - TABLE_WIDTH / 2) < SIDE_MOUTH_HALF_WIDTH) return true
-    } else {
-      // 短边库边（左/右）：仅两端角袋豁口，无中袋
-      if (perpendicularCoord < CORNER_MOUTH_HALF_WIDTH) return true
-      if (perpendicularCoord > TABLE_HEIGHT - CORNER_MOUTH_HALF_WIDTH) return true
-    }
-    return false
-  }
-
   // ==================== 工具方法 ====================
 
+  /** 球放在该位置是否完全在台面内（不压库边，也不越过任何袋口线） */
   isInsideTable(position: Vector2): boolean {
     return (
       position.x - BALL_RADIUS >= 0 &&
       position.x + BALL_RADIUS <= TABLE_WIDTH &&
       position.y - BALL_RADIUS >= 0 &&
-      position.y + BALL_RADIUS <= TABLE_HEIGHT
+      position.y + BALL_RADIUS <= TABLE_HEIGHT &&
+      POCKETS.every((_, i) => this.depthPastMouth(position, i) <= -BALL_RADIUS * 0.5)
     )
   }
 
@@ -321,14 +282,6 @@ export class PhysicsWorld {
       if (!ball.active) return false
       if (excludeBall && ball === excludeBall) return false
       return ball.position.distFrom(position) < BALL_DIAMETER
-    })
-  }
-
-  /** 检查位置是否在袋口内（防止放在袋口上） */
-  isInsideAnyPocket(position: Vector2): boolean {
-    return POCKET_POSITIONS.some((pocketPos, i) => {
-      const radius = i === 1 || i === 4 ? SIDE_POCKET_RADIUS : CORNER_POCKET_RADIUS
-      return position.distFrom(pocketPos) <= radius
     })
   }
 }
