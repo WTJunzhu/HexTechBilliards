@@ -226,7 +226,7 @@ export class CanvasRenderer {
     ctx.save()
     ctx.clip()
     ctx.fillStyle = 'rgba(0,0,0,0.05)'
-    for (let i = 0; i < tableW; i += this.scale * 4) {
+    for (let i = 0; i < tableW; i += this.scale * 8) {
       ctx.fillRect(tableX + i, tableY, 1, tableH)
     }
     ctx.restore()
@@ -382,12 +382,12 @@ export class CanvasRenderer {
 
       // 等质量球的正碰预测：目标球沿两球中心连线前进，白球保留切线方向。
       const normal = ballHit.ball.position.subtract(ballHit.point).normalized
-      const targetEnd = ballHit.ball.position.add(normal.multiply(5))
+      const targetEnd = ballHit.ball.position.add(normal.multiply(10))
       this.drawDashedSegment(ctx, ballHit.ball.position, targetEnd, 'rgba(255,211,77,0.9)', 1.8)
 
       const tangentVelocity = direction.subtract(normal.multiply(direction.dot(normal)))
       if (tangentVelocity.length > 0.08) {
-        const cueEnd = ballHit.point.add(tangentVelocity.normalized.multiply(3.5))
+        const cueEnd = ballHit.point.add(tangentVelocity.normalized.multiply(7))
         this.drawDashedSegment(ctx, ballHit.point, cueEnd, 'rgba(121,196,255,0.8)', 1.2)
       }
       this.drawPredictionMarker(ctx, ballHit.point, '#ffffff')
@@ -395,7 +395,7 @@ export class CanvasRenderer {
     }
 
     this.drawDashedSegment(ctx, origin, cushionHit.point, 'rgba(255,255,255,0.78)', 1.5)
-    const reflectedEnd = cushionHit.point.add(cushionHit.direction.multiply(6))
+    const reflectedEnd = cushionHit.point.add(cushionHit.direction.multiply(12))
     this.drawDashedSegment(ctx, cushionHit.point, reflectedEnd, 'rgba(121,196,255,0.8)', 1.4)
     this.drawPredictionMarker(ctx, cushionHit.point, '#79c4ff')
   }
@@ -491,14 +491,14 @@ export class CanvasRenderer {
     const isShooting = this.cueStick.shooting
     const shootProgress = this.cueStick.shootProgress
 
-    const cueLength = 25 * this.scale
-    const cueWidth = 1.5 * this.scale
+    const cueLength = 40 * this.scale
+    const cueWidth = 1.2 * this.scale
 
     // 基础间距：球杆尖端到球表面的距离（像素）
     // 这个值确保杆头始终在白球外部，清晰可见
     const baseGap = BALL_RADIUS * this.scale * 1.5
     // 蓄力拉杆距离：力度越大，球杆越远离球
-    const pullBackDist = power * this.scale * 4
+    const pullBackDist = power * this.scale * 8
 
     // 击球动画：球杆冲向球
     let animOffset = 0

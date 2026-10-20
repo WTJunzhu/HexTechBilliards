@@ -9,25 +9,20 @@ import { Vector2 } from './Vector2'
  * - 6个袋口: 四角 + 两侧中袋
  *
  * 游戏坐标系：以球桌左上角内侧为原点
- * 单位系统：1单位 = 球半径
- *
- * 真实比例：球桌 = 球直径的 ~44倍
- * 游戏比例：球桌 = 球直径的 ~18倍 (36/2)
- * 比例系数 = 44/18 ≈ 2.44
- * 保持2:1的球桌长宽比，球在屏幕上仍清晰可见
+ * 单位系统：1单位 = 球半径（28.575mm），球桌按真实比例换算
  */
 
 // 球的参数
 export const BALL_RADIUS = 1       // 1单位 = 1个球半径
 export const BALL_DIAMETER = BALL_RADIUS * 2
+const BALL_RADIUS_MM = 57.15 / 2
 
-// 球桌参数（保持2:1比例）
-// 真实比例44:22 → 游戏比例 36:18 = 2:1
-export const TABLE_WIDTH = 36      // 内径宽度（球半径单位）
-export const TABLE_HEIGHT = 18     // 内径高度（球半径单位）
+// 球桌内径（真实尺寸换算）：88.9 × 44.45 个球半径
+export const TABLE_WIDTH = 2540 / BALL_RADIUS_MM
+export const TABLE_HEIGHT = 1270 / BALL_RADIUS_MM
 
-// 库边（cushion）宽度
-export const CUSHION_WIDTH = 1.5   // 库边宽度
+// 库边（cushion + 木框）绘制宽度
+export const CUSHION_WIDTH = 3.5
 
 // ==================== 袋口与库边几何 ====================
 //
@@ -36,10 +31,10 @@ export const CUSHION_WIDTH = 1.5   // 库边宽度
 // 球在越过之前仍可能撞到袋角被弹出，这就是真实台球里的"袋角拒球"。
 // 物理碰撞、落袋判定、绘制与自由球合法性都使用同一套数据。
 
-// 角袋：袋角距球桌角点的距离（沿库边）。袋口宽 = 该值 × √2 ≈ 3.4 个球半径
-export const CORNER_JAW_OFFSET = 2.4
-// 中袋：袋口半宽。袋口宽 3.6 个球半径（中式台球中袋略宽于角袋）
-export const SIDE_MOUTH_HALF_WIDTH = 1.8
+// 角袋：袋角距球桌角点的距离（沿库边）。袋口宽 = 该值 × √2 = 3.2 个球半径（约 91mm）
+export const CORNER_JAW_OFFSET = 3.2 / Math.SQRT2
+// 中袋：袋口半宽。袋口宽 3.5 个球半径（约 100mm，中式台球中袋略宽于角袋）
+export const SIDE_MOUTH_HALF_WIDTH = 1.75
 // 球心越过袋口线多深算落袋
 export const CORNER_CAPTURE_DEPTH = 0.5
 export const SIDE_CAPTURE_DEPTH = 0.35
@@ -111,10 +106,14 @@ export function closestPointOnSegment(p: Vector2, a: Vector2, b: Vector2): Vecto
 // 物理以固定步长推进，与屏幕刷新率无关
 export const PHYSICS_DT = 1 / 120
 
+// 以下带长度量纲的常数最初在 36 个球半径长的缩小台面上标定，换成真实台面后按台长比例放大，
+// 使"球滚多少个台长、开球散开程度"等手感保持不变
+const LENGTH_SCALE = TABLE_WIDTH / 36
+
 // 滑动摩擦减速度（μs·g）。球打滑时（刚出杆、低/高杆、碰撞后）受此摩擦，远大于滚动阻力
-export const SLIDING_DECEL = 20
+export const SLIDING_DECEL = 20 * LENGTH_SCALE
 // 侧旋在台面上的衰减速率（速度单位/秒）
-export const SIDE_SPIN_DECEL = 6
+export const SIDE_SPIN_DECEL = 6 * LENGTH_SCALE
 // 最大塞位：杆头最远可偏离球心半个半径，超出容易滑杆
 export const MAX_TIP_OFFSET = 0.5
 // 库边与球之间的摩擦系数，决定侧旋撞库时改变反弹角的程度
@@ -124,14 +123,14 @@ export const CUSHION_FRICTION = 0.08
 // 恒定部分让球干脆地停下；线性部分让高速球衰减更快
 // 标定（含库边损耗，配合 shotSpeed 力度曲线）：10%≈1.6个球径，25%≈半张台，
 // 50%≈1.4个台长，75%≈3个台长，满力≈5个台长、约5秒停球；满力开球平均进约1颗球
-export const ROLLING_DECEL = 5
-export const LINEAR_DRAG = 0.35
+export const ROLLING_DECEL = 5 * LENGTH_SCALE
+export const LINEAR_DRAG = 0.2
 
 // 恢复系数：只作用于碰撞法向速度，切向速度保留
 export const BALL_RESTITUTION = 0.95     // 球-球
 export const CUSHION_RESTITUTION = 0.8   // 球-库边（真实约 0.75～0.85）
-export const MIN_VELOCITY = 0.05    // 停止判定阈值
-export const MAX_SHOT_POWER = 200   // 满力击球初速度（开球级别）
+export const MIN_VELOCITY = 0.05 * LENGTH_SCALE  // 停止判定阈值
+export const MAX_SHOT_POWER = 200 * LENGTH_SCALE  // 满力击球初速度（开球级别）
 
 // 力度曲线的线性占比：力度条前段近似线性，便于控制普通击球；末段快速增长到开球力度
 export const POWER_CURVE_LINEAR = 0.4

@@ -17,10 +17,9 @@ import type { GameMessage, GameSnapshotMessage, NetworkEvent } from '../network/
  * - 三角形底边两角必须一全色一花色
  * - 三角形顶球在开球线上
  *
- * 使用缩放后的游戏坐标系：TABLE_WIDTH=36, TABLE_HEIGHT=18
  */
-const RACK_GAP = 0.06
-const RACK_JITTER = 0.025
+const RACK_GAP = 0.02
+const RACK_JITTER = 0.01
 
 function createInitialBalls(): Ball[] {
   const balls: Ball[] = []
@@ -28,8 +27,8 @@ function createInitialBalls(): Ball[] {
   // 白球 - 开球区（左侧1/4处）
   balls.push(new Ball(0, new Vector2(TABLE_WIDTH * 0.25, TABLE_HEIGHT * 0.5)))
 
-  // 三角形排列 - 顶球在球桌3/4处
-  const startX = TABLE_WIDTH * 0.72
+  // 三角形排列 - 顶球在置球点（球桌 3/4 处）
+  const startX = TABLE_WIDTH * 0.75
   const startY = TABLE_HEIGHT * 0.5
   // 真实球堆不可能绝对贴紧：完全贴紧时动量像牛顿摆一样只传给末端的球，开球散不开。
   // 这里给每颗球加一点微小的固定偏移（同一套种子，联机双方结果一致）
