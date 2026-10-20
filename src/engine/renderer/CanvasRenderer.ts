@@ -12,7 +12,7 @@ import { Vector2 } from '../physics/Vector2'
 import type { Ball } from '../physics/Ball'
 import {
   TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
-  POCKETS, CUSHION_SEGMENTS, BREAK_LINE_X,
+  POCKETS, CUSHION_SEGMENTS, BREAK_LINE_X, closestPointOnSegment,
   BALL_RADIUS, BALL_DIAMETER, RENDER_SCALE, updateRenderScale,
 } from '../physics/TableSpec'
 import type { PhysicsWorld } from '../physics/PhysicsWorld'
@@ -121,7 +121,8 @@ export class CanvasRenderer {
   }
 
   /** 完整渲染一帧 */
-  render(world: PhysicsWorld): void {
+  render(world: PhysicsWorld, dt = 0): void {
+    this.updateOrientations(world, dt)
     const ctx = this.ctx
     if (!ctx) return
 
@@ -149,6 +150,9 @@ export class CanvasRenderer {
 
     // 绘制瞄准线与预测轨迹
     this.drawAimLine(ctx, world)
+
+    // 落袋中的球（画在台面球之下）
+    this.drawPocketAnimations(ctx)
 
     // 目标球光圈（画在球下方）
     for (const ball of world.balls) {
@@ -291,69 +295,191 @@ export class CanvasRenderer {
 
   // ==================== 球绘制 ====================
 
-  private drawBall(ctx: CanvasRenderingContext2D, ball: Ball): void {
-    const pos = this.toPixel(ball.position)
-    const radius = ball.radius * this.scale
+  /**
+   * 绘制一颗球。球面纹理（底色、条纹、号码圆）按球的三维朝向逐像素渲染到小画布上，
+   * 朝向随球的旋转更新，因此能看到球在滚动、低杆时反向旋转等效果
+   */
+  private drawBall(
+    ctx: CanvasRenderingContext2D,
+    ball: Ball,
+    opts: { position?: Vector2; radiusScale?: number; alpha?: number } = {},
+  ): void {
+    const pos = this.toPixel(opts.position ?? ball.position)
+    const radius = ball.radius * this.scale * (opts.radiusScale ?? 1)
+    const visual = this.getVisual(ball)
+
+    ctx.save()
+    ctx.globalAlpha = opts.alpha ?? 1
 
     // 球阴影（光源固定在屏幕上方，旋转时换算回布局方向）
-    const shadow = this.screenToLayoutDir(0, this.scale * 0.2)
+    const shadow = this.screenToLayoutDir(0, radius * 0.2)
     ctx.beginPath()
     ctx.arc(pos.x + shadow.x, pos.y + shadow.y, radius, 0, Math.PI * 2)
     ctx.fillStyle = 'rgba(0,0,0,0.3)'
     ctx.fill()
 
-    // 球体
-    ctx.beginPath()
-    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2)
-
-    if (ball.isStripe) {
-      // 花色球：白底 + 彩色条纹
-      ctx.fillStyle = '#FFFFFF'
-      ctx.fill()
-      // 条纹
-      ctx.save()
+    // 球体纹理
+    const sprite = this.getBallSprite(ball, visual, ball.radius * this.scale)
+    if (sprite) {
+      ctx.drawImage(sprite, pos.x - radius, pos.y - radius, radius * 2, radius * 2)
+    } else {
       ctx.beginPath()
       ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2)
-      ctx.clip()
-      ctx.fillStyle = ball.color
-      ctx.fillRect(
-        pos.x - radius,
-        pos.y - radius * 0.45,
-        radius * 2,
-        radius * 0.9,
-      )
-      ctx.restore()
-    } else {
-      // 全色球 & 白球 & 8号球
       ctx.fillStyle = ball.color
       ctx.fill()
     }
 
-    // 球上数字
+    // 号码：跟随号码圆的位置，转到侧面时缩小变淡，转到背面不画
     if (ball.number > 0) {
-      ctx.beginPath()
-      ctx.arc(pos.x, pos.y, radius * 0.4, 0, Math.PI * 2)
-      ctx.fillStyle = '#FFFFFF'
-      ctx.fill()
-
-      ctx.fillStyle = '#000000'
-      ctx.font = `bold ${Math.max(radius * 0.65, 8)}px Arial`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      // 球桌旋转时把数字转回正向
-      ctx.save()
-      ctx.translate(pos.x, pos.y)
-      if (this.rotated) ctx.rotate(Math.PI / 2)
-      ctx.fillText(ball.number.toString(), 0, 0)
-      ctx.restore()
+      const m = visual.m
+      // 号码圆中心在球体坐标 (0,0,-1)，世界坐标为 M 第三列取反
+      const sx = -m[2], sy = -m[5], facing = m[8]
+      if (facing > 0.35) {
+        ctx.globalAlpha = (opts.alpha ?? 1) * Math.min(1, (facing - 0.35) / 0.35)
+        ctx.fillStyle = '#000000'
+        ctx.font = `bold ${Math.max(radius * 0.62 * facing, 6)}px Arial`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.save()
+        ctx.translate(pos.x + sx * radius, pos.y + sy * radius)
+        // 球桌旋转时把数字转回正向
+        if (this.rotated) ctx.rotate(Math.PI / 2)
+        ctx.fillText(ball.number.toString(), 0, 0)
+        ctx.restore()
+        ctx.globalAlpha = opts.alpha ?? 1
+      }
     }
 
     // 高光（屏幕左上方）
-    const shine = this.screenToLayoutDir(-radius * 0.25, -radius * 0.25)
+    const shine = this.screenToLayoutDir(-radius * 0.3, -radius * 0.3)
     ctx.beginPath()
-    ctx.arc(pos.x + shine.x, pos.y + shine.y, radius * 0.3, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(255,255,255,0.35)'
+    ctx.arc(pos.x + shine.x, pos.y + shine.y, radius * 0.28, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(255,255,255,0.38)'
     ctx.fill()
+    ctx.restore()
+  }
+
+  // ==================== 球的三维朝向 ====================
+
+  /**
+   * 每颗球的朝向矩阵 M（球体坐标 → 世界坐标，行优先 3×3）与纹理缓存。
+   * 世界坐标：x 右、y 下、z 指向屏幕里（台面方向），观察者看到 z < 0 的半球。
+   * 以 Ball 对象为键：重新摆球会生成新对象，朝向自动复位（号码朝上）
+   */
+  private visuals = new WeakMap<Ball, { m: number[]; sprite: HTMLCanvasElement | null; dirty: boolean; size: number }>()
+
+  private getVisual(ball: Ball) {
+    let visual = this.visuals.get(ball)
+    if (!visual) {
+      visual = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], sprite: null, dirty: true, size: 0 }
+      this.visuals.set(ball, visual)
+    }
+    return visual
+  }
+
+  /**
+   * 按球的角速度推进朝向。rollSpin 是"纯滚动对应的速度"，换算角速度 ω = (vy, -vx, sideSpin) / R
+   * （推导：滚动时与台面接触点静止，ω × (R·ẑ) = -v）
+   */
+  private updateOrientations(world: PhysicsWorld, dt: number): void {
+    if (dt <= 0) return
+    for (const ball of world.balls) {
+      if (!ball.active) continue
+      const wx = ball.rollSpin.y / ball.radius
+      const wy = -ball.rollSpin.x / ball.radius
+      const wz = ball.sideSpin / ball.radius
+      const w = Math.hypot(wx, wy, wz)
+      if (w < 1e-6) continue
+      const visual = this.getVisual(ball)
+      visual.m = multiply3(rotationMatrix(wx / w, wy / w, wz / w, w * dt), visual.m)
+      orthonormalize(visual.m)
+      visual.dirty = true
+    }
+  }
+
+  /** 逐像素渲染球面纹理（只在朝向或尺寸变化时重绘） */
+  private getBallSprite(ball: Ball, visual: { m: number[]; sprite: HTMLCanvasElement | null; dirty: boolean; size: number }, radius: number): HTMLCanvasElement | null {
+    if (typeof document === 'undefined') return null
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1
+    const size = Math.max(8, Math.ceil(radius * 2 * dpr))
+    if (visual.sprite && !visual.dirty && visual.size === size) return visual.sprite
+
+    const canvas = visual.sprite ?? document.createElement('canvas')
+    if (canvas.width !== size) {
+      canvas.width = size
+      canvas.height = size
+    }
+    const spriteCtx = canvas.getContext('2d')
+    if (!spriteCtx) return null
+    const image = spriteCtx.createImageData(size, size)
+    const data = image.data
+    const base = hexToRgb(ball.isCue ? '#f5f5f0' : ball.color)
+    const m = visual.m
+    const half = size / 2
+
+    for (let j = 0; j < size; j++) {
+      const y = (j + 0.5 - half) / half
+      for (let i = 0; i < size; i++) {
+        const x = (i + 0.5 - half) / half
+        const r2 = x * x + y * y
+        const k = (j * size + i) * 4
+        if (r2 >= 1) {
+          data[k + 3] = 0
+          continue
+        }
+        const z = -Math.sqrt(1 - r2)
+        // 球体坐标 = Mᵀ · 世界坐标
+        const by = m[1] * x + m[4] * y + m[7] * z
+        const bz = m[2] * x + m[5] * y + m[8] * z
+
+        let r = base[0], g = base[1], b = base[2]
+        const onNumberDisc = ball.number > 0 && -bz > 0.917
+        const offStripe = ball.isStripe && Math.abs(by) > 0.45
+        if (onNumberDisc || offStripe) {
+          r = 250; g = 250; b = 245
+        }
+        // 简单的球面明暗：边缘稍暗
+        const shade = 0.62 + 0.38 * -z
+        data[k] = r * shade
+        data[k + 1] = g * shade
+        data[k + 2] = b * shade
+        // 边缘抗锯齿
+        data[k + 3] = Math.min(1, (1 - Math.sqrt(r2)) * half + 0.5) * 255
+      }
+    }
+    spriteCtx.putImageData(image, 0, 0)
+    visual.sprite = canvas
+    visual.size = size
+    visual.dirty = false
+    return canvas
+  }
+
+  // ==================== 落袋动画 ====================
+
+  private pocketAnimations: { ball: Ball; from: Vector2; to: Vector2; start: number }[] = []
+  private static readonly POCKET_ANIM_MS = 380
+
+  /** 球落袋时调用：球从落袋位置滑向袋洞中心并缩小消失 */
+  notifyPocketed(ball: Ball, pocketIndex: number): void {
+    const pocket = POCKETS[pocketIndex]
+    if (!pocket) return
+    this.pocketAnimations.push({ ball, from: ball.position.clone(), to: pocket.holeCenter, start: performance.now() })
+  }
+
+  private drawPocketAnimations(ctx: CanvasRenderingContext2D): void {
+    const now = performance.now()
+    this.pocketAnimations = this.pocketAnimations.filter(anim => {
+      const t = (now - anim.start) / CanvasRenderer.POCKET_ANIM_MS
+      // 动画结束，或球已被重新摆上台面（白球自由球）
+      if (t >= 1 || anim.ball.active) return false
+      const eased = 1 - (1 - t) * (1 - t)
+      this.drawBall(ctx, anim.ball, {
+        position: Vector2.lerp(anim.from, anim.to, eased),
+        radiusScale: 1 - 0.45 * eased,
+        alpha: 1 - 0.8 * t,
+      })
+      return true
+    })
   }
 
   /** 开球区：开球线左侧淡色覆盖 */
@@ -419,29 +545,86 @@ export class CanvasRenderer {
     if (direction.length === 0) return
 
     const ballHit = this.findFirstBallHit(origin, direction, world)
-    const cushionHit = this.findCushionHit(origin, direction)
+    const trace = this.traceToRail(origin, direction)
 
-    if (ballHit && ballHit.distance <= cushionHit.distance) {
+    if (ballHit && ballHit.distance <= trace.distance) {
       this.drawDashedSegment(ctx, origin, ballHit.point, 'rgba(255,255,255,0.78)', 1.5)
+      this.drawGhostBall(ctx, ballHit.point)
 
-      // 等质量球的正碰预测：目标球沿两球中心连线前进，白球保留切线方向。
+      // 等质量球的碰撞预测：目标球沿两球中心连线前进，一直画到库边或袋口
       const normal = ballHit.ball.position.subtract(ballHit.point).normalized
-      const targetEnd = ballHit.ball.position.add(normal.multiply(10))
-      this.drawDashedSegment(ctx, ballHit.ball.position, targetEnd, 'rgba(255,211,77,0.9)', 1.8)
+      const objectTrace = this.traceToRail(ballHit.ball.position, normal)
+      const potted = objectTrace.pocket !== null
+      this.drawDashedSegment(ctx, ballHit.ball.position, objectTrace.point,
+        potted ? 'rgba(120,230,140,0.95)' : 'rgba(255,211,77,0.9)', 1.8)
+      if (potted) this.drawPocketTarget(ctx, objectTrace.pocket!)
 
+      // 白球沿切线方向分离
       const tangentVelocity = direction.subtract(normal.multiply(direction.dot(normal)))
       if (tangentVelocity.length > 0.08) {
         const cueEnd = ballHit.point.add(tangentVelocity.normalized.multiply(7))
         this.drawDashedSegment(ctx, ballHit.point, cueEnd, 'rgba(121,196,255,0.8)', 1.2)
       }
-      this.drawPredictionMarker(ctx, ballHit.point, '#ffffff')
       return
     }
 
-    this.drawDashedSegment(ctx, origin, cushionHit.point, 'rgba(255,255,255,0.78)', 1.5)
-    const reflectedEnd = cushionHit.point.add(cushionHit.direction.multiply(12))
-    this.drawDashedSegment(ctx, cushionHit.point, reflectedEnd, 'rgba(121,196,255,0.8)', 1.4)
-    this.drawPredictionMarker(ctx, cushionHit.point, '#79c4ff')
+    this.drawDashedSegment(ctx, origin, trace.point, 'rgba(255,255,255,0.78)', 1.5)
+    if (trace.pocket !== null) {
+      // 白球直接进袋
+      this.drawGhostBall(ctx, trace.point, 'rgba(255,107,107,0.8)')
+      return
+    }
+    this.drawGhostBall(ctx, trace.point)
+    const reflectedEnd = trace.point.add(trace.reflect.multiply(12))
+    this.drawDashedSegment(ctx, trace.point, reflectedEnd, 'rgba(121,196,255,0.8)', 1.4)
+  }
+
+  /** 球影：白球撞击时所在位置的空心圆 */
+  private drawGhostBall(ctx: CanvasRenderingContext2D, position: Vector2, color = 'rgba(255,255,255,0.75)'): void {
+    const pixel = this.toPixel(position)
+    ctx.beginPath()
+    ctx.arc(pixel.x, pixel.y, BALL_RADIUS * this.scale, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(255,255,255,0.12)'
+    ctx.fill()
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+
+  /** 预测会进袋时高亮该袋口 */
+  private drawPocketTarget(ctx: CanvasRenderingContext2D, pocketIndex: number): void {
+    const pocket = POCKETS[pocketIndex]
+    const center = this.toPixel(pocket.holeCenter)
+    ctx.beginPath()
+    ctx.arc(center.x, center.y, (pocket.holeRadius + 0.3) * this.scale, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(120,230,140,0.95)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+  }
+
+  /**
+   * 球心沿直线前进，直到碰库或进入袋口。
+   * 碰到的位置附近没有库边线段（落在袋口缺口里）时，改为求与袋口线的交点，视为进袋
+   */
+  private traceToRail(origin: Vector2, direction: Vector2): {
+    point: Vector2; distance: number; pocket: number | null; reflect: Vector2
+  } {
+    const hit = this.findCushionHit(origin, direction)
+    const touchesCushion = CUSHION_SEGMENTS.some(
+      segment => closestPointOnSegment(hit.point, segment.a, segment.b).distFrom(hit.point) < BALL_RADIUS + 0.05,
+    )
+    if (touchesCushion) return { point: hit.point, distance: hit.distance, pocket: null, reflect: hit.direction }
+
+    let best: { point: Vector2; distance: number; pocket: number } | null = null
+    POCKETS.forEach((pocket, index) => {
+      const t = raySegmentIntersection(origin, direction, pocket.mouthA, pocket.mouthB)
+      if (t !== null && (!best || t < best.distance)) {
+        best = { point: origin.add(direction.multiply(t)), distance: t, pocket: index }
+      }
+    })
+    if (best) return { ...(best as { point: Vector2; distance: number; pocket: number }), reflect: direction }
+    // 打在袋角上：停在碰撞点，不预测反弹
+    return { point: hit.point, distance: hit.distance, pocket: null, reflect: hit.direction }
   }
 
   private drawDashedSegment(
@@ -461,14 +644,6 @@ export class CanvasRenderer {
     ctx.setLineDash([6, 5])
     ctx.stroke()
     ctx.setLineDash([])
-  }
-
-  private drawPredictionMarker(ctx: CanvasRenderingContext2D, position: Vector2, color: string): void {
-    const pixel = this.toPixel(position)
-    ctx.beginPath()
-    ctx.arc(pixel.x, pixel.y, Math.max(3, this.scale * 0.18), 0, Math.PI * 2)
-    ctx.fillStyle = color
-    ctx.fill()
   }
 
   private findFirstBallHit(origin: Vector2, direction: Vector2, world: PhysicsWorld): {
@@ -621,10 +796,7 @@ export class CanvasRenderer {
 
     ctx.save()
     ctx.globalAlpha = preview.valid ? 1 : 0.55
-    const originalPosition = cueBall.position
-    cueBall.position = preview.position
-    this.drawBall(ctx, cueBall)
-    cueBall.position = originalPosition
+    this.drawBall(ctx, cueBall, { position: preview.position })
     ctx.restore()
 
     // 合法：绿色描边；不合法：红色描边
@@ -643,4 +815,65 @@ export class CanvasRenderer {
   private drawForceFields(ctx: CanvasRenderingContext2D): void {
     // 海克斯力场视觉占位，后续实现
   }
+}
+
+// ==================== 三维旋转工具 ====================
+
+/** 绕单位轴 (x, y, z) 旋转 angle 的矩阵（Rodrigues 公式，行优先） */
+function rotationMatrix(x: number, y: number, z: number, angle: number): number[] {
+  const c = Math.cos(angle), s = Math.sin(angle), t = 1 - c
+  return [
+    t * x * x + c, t * x * y - s * z, t * x * z + s * y,
+    t * x * y + s * z, t * y * y + c, t * y * z - s * x,
+    t * x * z - s * y, t * y * z + s * x, t * z * z + c,
+  ]
+}
+
+function multiply3(a: number[], b: number[]): number[] {
+  const out = new Array(9)
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      out[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]
+    }
+  }
+  return out
+}
+
+/** 消除累积误差：对列向量做 Gram-Schmidt 正交化 */
+function orthonormalize(m: number[]): void {
+  let ax = m[0], ay = m[3], az = m[6]
+  let len = Math.hypot(ax, ay, az)
+  ax /= len; ay /= len; az /= len
+  let bx = m[1], by = m[4], bz = m[7]
+  const d = ax * bx + ay * by + az * bz
+  bx -= d * ax; by -= d * ay; bz -= d * az
+  len = Math.hypot(bx, by, bz)
+  bx /= len; by /= len; bz /= len
+  m[0] = ax; m[3] = ay; m[6] = az
+  m[1] = bx; m[4] = by; m[7] = bz
+  m[2] = ay * bz - az * by
+  m[5] = az * bx - ax * bz
+  m[8] = ax * by - ay * bx
+}
+
+/** 射线 origin + t·dir 与线段 ab 的交点参数 t（不相交返回 null） */
+function raySegmentIntersection(origin: Vector2, dir: Vector2, a: Vector2, b: Vector2): number | null {
+  const ab = b.subtract(a)
+  const denom = dir.cross(ab)
+  if (Math.abs(denom) < 1e-9) return null
+  const ao = a.subtract(origin)
+  const t = ao.cross(ab) / denom
+  const u = ao.cross(dir) / denom
+  return t > 0 && u >= 0 && u <= 1 ? t : null
+}
+
+const rgbCache = new Map<string, [number, number, number]>()
+function hexToRgb(color: string): [number, number, number] {
+  let rgb = rgbCache.get(color)
+  if (!rgb) {
+    const hex = color.startsWith('#') ? color.slice(1) : 'ffffff'
+    rgb = [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)]
+    rgbCache.set(color, rgb)
+  }
+  return rgb
 }

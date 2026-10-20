@@ -479,7 +479,11 @@ function createCanvas() {
   renderer.init(ctx, logicalWidth, logicalHeight)
   gameStore.physicsWorld.clearHooks()
   gameStore.physicsWorld.addPostCollisionHook((ball1, ball2) => audioEngine.playBallCollision(ball1, ball2))
-  gameStore.physicsWorld.addPocketHook(() => audioEngine.playPocket())
+  gameStore.physicsWorld.addPocketHook((ball, pocketIndex) => {
+    audioEngine.playPocket()
+    renderer.notifyPocketed(ball, pocketIndex)
+  })
+  gameStore.physicsWorld.addCushionHook(ball => audioEngine.playCushion(ball))
   canvasReady = true
 
   canvasWrapper.value.appendChild(canvasEl)
@@ -532,7 +536,7 @@ function gameLoop(now: number = performance.now()) {
       if (!renderer.cueStick.shooting) renderer.cueStick.visible = false
     }
 
-    renderer.render(gameStore.physicsWorld)
+    renderer.render(gameStore.physicsWorld, Math.min(frameSeconds, 0.1))
   }
   animationFrameId = requestAnimationFrame(gameLoop)
 }

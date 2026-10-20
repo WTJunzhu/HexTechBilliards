@@ -12,6 +12,7 @@ export class AudioEngine {
   private enabled = true
   private lastCollisionAt = 0
   private lastPocketAt = 0
+  private lastCushionAt = 0
 
   /** 菜单中的音效开关（与浏览器不支持时的自动禁用分开） */
   private muted = false
@@ -43,6 +44,18 @@ export class AudioEngine {
     const impact = Math.sqrt(ball1.velocity.subtract(ball2.velocity).length / MAX_SHOT_POWER)
     const volume = Math.min(0.065, 0.012 + impact * 0.06)
     this.playTone(410 + Math.min(impact * 360, 260), 0.035, volume, 'square', 0.45)
+  }
+
+  /** 撞库：低沉的闷响，音量随球速变化 */
+  playCushion(ball: Ball): void {
+    const impact = Math.sqrt(ball.velocity.length / MAX_SHOT_POWER)
+    if (impact < 0.08) return
+    const now = performance.now()
+    if (now - this.lastCushionAt < 40) return
+    this.lastCushionAt = now
+    const volume = Math.min(0.08, 0.015 + impact * 0.09)
+    this.playTone(95 + impact * 50, 0.08, volume, 'triangle', 0.55)
+    this.playTone(220, 0.03, volume * 0.4, 'sine', 0.6)
   }
 
   playPocket(): void {
