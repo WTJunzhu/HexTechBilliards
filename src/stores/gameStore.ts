@@ -393,17 +393,14 @@ export const useGameStore = defineStore('game', () => {
     }
 
     // 球组分配（中式八球：开球后第一个合法进球决定球组）
+    // 同一杆进了全色和花色时，按白球首碰的球决定；另一组进的球算帮对手进球，不犯规
     if (!groupsAssigned.value && !breakShot && !result.foul) {
-      for (const ball of pocketedThisTurn.value) {
-        if (!ball.isCue && !ball.isEight) {
-          const assigned = ruleEngine.assignGroups(
-            ball, currentPlayer(), otherPlayer(), breakShot
-          )
-          if (assigned) {
-            groupsAssigned.value = true
-            break
-          }
-        }
+      const groupBalls = pocketedThisTurn.value.filter(b => !b.isCue && !b.isEight)
+      const mixed = groupBalls.some(b => b.isSolid) && groupBalls.some(b => b.isStripe)
+      const firstHit = physicsWorld.balls.find(b => b.number === firstHitBallThisTurn.value)
+      const decider = mixed && firstHit && !firstHit.isEight ? firstHit : groupBalls[0]
+      if (decider && ruleEngine.assignGroups(decider, currentPlayer(), otherPlayer(), breakShot)) {
+        groupsAssigned.value = true
       }
     }
 
