@@ -30,8 +30,11 @@ export class CueController {
   /** 白球位置 */
   public cueBallPosition: Vector2 = Vector2.zero
 
-  /** 触摸起始位置 */
+  /** 触摸起始位置（Canvas像素，用于计算蓄力拖动距离） */
   private touchStartPos: Vector2 | null = null
+
+  /** 拖动多少像素达到满力 */
+  private static readonly FULL_POWER_DRAG_PX = 150
 
   /** 瞄准起始角度 */
   private aimStartAngle: number = 0
@@ -55,10 +58,10 @@ export class CueController {
   /**
    * 开始瞄准
    */
-  startAim(touchPos: Vector2): void {
+  startAim(touchPos: Vector2, pixelPos: Vector2): void {
     this.isAiming = true
     this.isPowering = false
-    this.touchStartPos = touchPos
+    this.touchStartPos = pixelPos
     this.power = 0
 
     // 计算初始瞄准角度（白球 → 触摸点反方向）
@@ -70,13 +73,13 @@ export class CueController {
   /**
    * 瞄准中移动
    */
-  moveAim(touchPos: Vector2): void {
+  moveAim(touchPos: Vector2, pixelPos: Vector2): void {
     if (!this.touchStartPos) return
 
     if (this.isPowering) {
-      // 蓄力模式：根据拖动距离调整力度
-      const dist = touchPos.subtract(this.touchStartPos).length
-      this.power = Math.min(dist / 100, 1) // 100像素拖拽=满力
+      // 蓄力模式：根据屏幕上的拖动距离调整力度
+      const dist = pixelPos.subtract(this.touchStartPos).length
+      this.power = Math.min(dist / CueController.FULL_POWER_DRAG_PX, 1)
       this.onUpdatePower?.(this.power)
     } else if (this.isAiming) {
       // 瞄准模式：根据触摸位置计算角度
@@ -118,24 +121,5 @@ export class CueController {
     return this.cueBallPosition.add(
       Vector2.fromAngle(this.aimAngle, lineLength)
     )
-  }
-
-  /**
-   * 鼠标/触摸事件 → 控制器输入
-   */
-  handleInput(event: InputEvent, gameToPixel: (pos: Vector2) => Vector2, pixelToGame: (pos: Vector2) => Vector2): void {
-    const gamePos = pixelToGame(event.position)
-
-    switch (event.type) {
-      case 'start':
-        this.startAim(gamePos)
-        break
-      case 'move':
-        this.moveAim(gamePos)
-        break
-      case 'end':
-        this.endShot()
-        break
-    }
   }
 }

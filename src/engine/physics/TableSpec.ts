@@ -53,12 +53,23 @@ export const POCKET_POSITIONS: Vector2[] = [
   new Vector2(TABLE_WIDTH, TABLE_HEIGHT),    // 右下角袋
 ]
 
-// 物理常数
-export const FRICTION = 0.99      // 每帧速度衰减（桌面摩擦）
+// 物理常数（时间单位：秒；速度单位：球半径/秒）
+// 物理以固定步长推进，与屏幕刷新率无关
+export const PHYSICS_DT = 1 / 120
+
+// 台面摩擦：减速度 = ROLLING_DECEL + LINEAR_DRAG × 速度
+// 恒定部分模拟滚动摩擦，让球干脆地停下；线性部分让高速球衰减更快
+// 标定（不计库边损耗）：满力≈3.9个台长，50%≈1.4个台长，25%≈半张台，10%≈1.7个球径，满力约5.7秒停球
+export const ROLLING_DECEL = 5
+export const LINEAR_DRAG = 0.25
+
 export const COLLISION_LOSS = 0.01  // 碰撞能量损失（极小）
 export const CUSHION_LOSS = 0.05    // 库边碰撞能量损失（极小）
-export const MIN_VELOCITY = 0.005   // 停止判定阈值（接近零）
-export const MAX_SHOT_POWER = 8    // 最大击球力度
+export const MIN_VELOCITY = 0.05    // 停止判定阈值
+export const MAX_SHOT_POWER = 64    // 满力击球初速度
+
+// 每个子步内球的最大位移，防止高速球穿过其他球
+export const MAX_SUBSTEP_TRAVEL = 0.5
 
 // 渲染缩放 - Canvas像素 / 游戏单位
 // 根据设备屏幕动态计算

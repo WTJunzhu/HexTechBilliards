@@ -1,4 +1,5 @@
 import type { Ball } from '../physics/Ball'
+import { MAX_SHOT_POWER } from '../physics/TableSpec'
 
 /**
  * 使用 Web Audio API 合成基础台球音效。
@@ -21,7 +22,7 @@ export class AudioEngine {
   }
 
   playCueShot(power: number): void {
-    const volume = 0.035 + Math.min(power / 8, 1) * 0.075
+    const volume = 0.035 + Math.min(power / MAX_SHOT_POWER, 1) * 0.075
     this.playTone(150, 0.045, volume, 'triangle', 0.65)
   }
 
@@ -30,9 +31,10 @@ export class AudioEngine {
     if (now - this.lastCollisionAt < 36) return
     this.lastCollisionAt = now
 
-    const impact = ball1.velocity.subtract(ball2.velocity).length
-    const volume = Math.min(0.065, 0.012 + impact * 0.009)
-    this.playTone(410 + Math.min(impact * 20, 260), 0.035, volume, 'square', 0.45)
+    // 相对速度归一化到满力初速度（0~1）
+    const impact = ball1.velocity.subtract(ball2.velocity).length / MAX_SHOT_POWER
+    const volume = Math.min(0.065, 0.012 + impact * 0.06)
+    this.playTone(410 + Math.min(impact * 360, 260), 0.035, volume, 'square', 0.45)
   }
 
   playPocket(): void {

@@ -1,5 +1,5 @@
 import { Vector2 } from './Vector2'
-import { BALL_RADIUS, FRICTION, MIN_VELOCITY, BallColor, isSolidBall, isStripeBall, isEightBall, isCueBall } from './TableSpec'
+import { BALL_RADIUS, ROLLING_DECEL, LINEAR_DRAG, MIN_VELOCITY, BallColor, isSolidBall, isStripeBall, isEightBall, isCueBall } from './TableSpec'
 
 export enum BallState {
   ACTIVE = 'active',     // 在台面上
@@ -14,7 +14,7 @@ export class Ball {
   /** 位置（游戏坐标） */
   public position: Vector2
 
-  /** 速度（游戏坐标/帧） */
+  /** 速度（游戏坐标/秒） */
   public velocity: Vector2
 
   /** 球状态 */
@@ -85,13 +85,15 @@ export class Ball {
     this.position = this.position.add(this.velocity.multiply(dt))
   }
 
-  /** 应用摩擦和停止判定（每帧调用一次，非每子步进） */
-  applyFriction(): void {
+  /** 应用台面摩擦和停止判定 */
+  applyFriction(dt: number): void {
     if (!this.active) return
-    this.velocity = this.velocity.multiply(FRICTION)
-    if (this.velocity.length < MIN_VELOCITY) {
-      this.velocity = Vector2.zero
-    }
+    const speed = this.velocity.length
+    if (speed === 0) return
+    const newSpeed = speed - (ROLLING_DECEL + LINEAR_DRAG * speed) * dt
+    this.velocity = newSpeed < MIN_VELOCITY
+      ? Vector2.zero
+      : this.velocity.multiply(newSpeed / speed)
   }
 
   /** 进袋 */

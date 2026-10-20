@@ -148,6 +148,7 @@ const showTurnHandoff = ref(false)
 const handoffReady = ref(false)
 const canvasWrapper = ref<HTMLElement | null>(null)
 let animationFrameId = 0
+let lastFrameTime = 0
 let canvasReady = false
 let canvasEl: HTMLCanvasElement | null = null
 let ctx: CanvasRenderingContext2D | null = null
@@ -334,8 +335,10 @@ function createCanvas() {
   }
 }
 
-function gameLoop() {
-  gameStore.update()
+function gameLoop(now: number = performance.now()) {
+  const frameSeconds = lastFrameTime ? (now - lastFrameTime) / 1000 : 0
+  lastFrameTime = now
+  gameStore.update(frameSeconds)
   if (canvasReady && ctx) {
     const currentPhase = gameStore.phase
     const isMyTurnNow = !isOnlineMode.value || gameStore.isMyTurn()
@@ -416,7 +419,7 @@ function handleInputStart(pixelPos: Vector2) {
     const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
     if (cueBall) {
       cueController.setCueBallPosition(cueBall.position)
-      cueController.startAim(gamePos)
+      cueController.startAim(gamePos, pixelPos)
     }
   }
 }
@@ -436,7 +439,7 @@ function handleInputMove(pixelPos: Vector2) {
     }
   }
 
-  cueController.moveAim(gamePos)
+  cueController.moveAim(gamePos, pixelPos)
 }
 
 function handleInputEnd() {

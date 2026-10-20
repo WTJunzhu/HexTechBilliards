@@ -4,7 +4,8 @@ import {
   TABLE_WIDTH, TABLE_HEIGHT,
   CORNER_POCKET_RADIUS, SIDE_POCKET_RADIUS,
   POCKET_POSITIONS, COLLISION_LOSS, CUSHION_LOSS, BALL_DIAMETER, BALL_RADIUS,
-  MIN_VELOCITY, CORNER_MOUTH_HALF_WIDTH, SIDE_MOUTH_HALF_WIDTH,
+  CORNER_MOUTH_HALF_WIDTH, SIDE_MOUTH_HALF_WIDTH,
+  PHYSICS_DT, MAX_SUBSTEP_TRAVEL,
 } from './TableSpec'
 
 /**
@@ -18,10 +19,10 @@ export type PocketHook = (ball: Ball, pocketIndex: number) => void
  * 物理世界 - 2D台球物理引擎
  *
  * 核心改进（vs 旧版）：
- * 1. 子步进（sub-stepping）：每帧执行多次物理步进，防止隧道效应
- * 2. 正确的执行顺序：位置更新 → 碰撞检测/响应，不再跳过静止球
- * 3. 碰撞后速度立即生效，下一子步进即会移动被碰撞的球
- * 4. 每帧仅末尾应用一次摩擦衰减（而非每子步进都衰减，避免过度减速）
+ * 1. 固定时间步长（PHYSICS_DT），结果与屏幕刷新率无关
+ * 2. 自适应子步进：按最快球速细分，防止隧道效应
+ * 3. 执行顺序：位置更新 → 进袋 → 碰撞 → 库边 → 摩擦
+ * 4. 摩擦为恒定减速 + 线性阻力（见 TableSpec），每个子步按时长积分
  *
  * 2D弹性碰撞原理：
  * - 等质量弹性碰撞：法线方向速度交换，切线方向速度不变
@@ -29,9 +30,6 @@ export type PocketHook = (ball: Ball, pocketIndex: number) => void
  */
 export class PhysicsWorld {
   public balls: Ball[] = []
-
-  /** 子步进次数（每帧物理细分，防止隧道效应） */
-  private static readonly SUB_STEPS = 4
 
   // 海克斯Hook预留
   private preCollisionHooks: CollisionHook[] = []
@@ -72,18 +70,20 @@ export class PhysicsWorld {
     this.pocketHooks = []
   }
 
-  /** 物理步进 - 每帧调用一次 */
-  step(): void {
+  /** 物理步进 - 每个固定时间步调用一次 */
+  step(dt: number = PHYSICS_DT): void {
     this.pocketedBallsThisFrame = []
     this.collisionEventsThisFrame = []
 
-    const subSteps = PhysicsWorld.SUB_STEPS
-    const dt = 1 / subSteps
+    // 子步数按最快球的位移决定，保证每个子步位移不超过 MAX_SUBSTEP_TRAVEL
+    const maxSpeed = Math.max(0, ...this.balls.filter(b => b.active).map(b => b.velocity.length))
+    const subSteps = Math.max(1, Math.ceil(maxSpeed * dt / MAX_SUBSTEP_TRAVEL))
+    const subDt = dt / subSteps
 
     for (let s = 0; s < subSteps; s++) {
       // 1. 更新位置（所有活跃球，不论是否 moving）
       for (const ball of this.balls) {
-        ball.updatePosition(dt)
+        ball.updatePosition(subDt)
       }
 
       // 2. 检测进袋
@@ -94,11 +94,11 @@ export class PhysicsWorld {
 
       // 4. 检测库边碰撞
       this.handleCushionCollisions()
-    }
 
-    // 5. 每帧末尾统一应用摩擦衰减（而非每子步进都衰减）
-    for (const ball of this.balls) {
-      ball.applyFriction()
+      // 5. 台面摩擦
+      for (const ball of this.balls) {
+        ball.applyFriction(subDt)
+      }
     }
   }
 
@@ -205,7 +205,7 @@ export class PhysicsWorld {
     ball1.velocity = ball1.velocity.multiply(1 - COLLISION_LOSS)
     ball2.velocity = ball2.velocity.multiply(1 - COLLISION_LOSS)
 
-    // 记录碰撞事件（去重：同一对球每帧只记录一次）
+    // 记录碰撞事件（去重：同一对球每步只记录一次）
     const alreadyRecorded = this.collisionEventsThisFrame.some(
       e => (e.ball1 === ball1 && e.ball2 === ball2) || (e.ball1 === ball2 && e.ball2 === ball1)
     )

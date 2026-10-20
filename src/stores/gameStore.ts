@@ -4,7 +4,7 @@ import { Ball, BallState } from '../engine/physics/Ball'
 import { Vector2 } from '../engine/physics/Vector2'
 import { PhysicsWorld } from '../engine/physics/PhysicsWorld'
 import { RuleEngine } from '../engine/game/RuleEngine'
-import { TABLE_WIDTH, TABLE_HEIGHT } from '../engine/physics/TableSpec'
+import { TABLE_WIDTH, TABLE_HEIGHT, PHYSICS_DT } from '../engine/physics/TableSpec'
 import { GamePhase as GP, BallGroup as BG, type Player as PlayerType, type TurnResult } from '../engine/game/GameState'
 import { getNetworkManager } from '../network/NetworkManager'
 import type { GameMessage, GameSnapshotMessage, NetworkEvent } from '../network/types'
@@ -120,6 +120,9 @@ export const useGameStore = defineStore('game', () => {
   // 网络管理器引用
   let networkManager: ReturnType<typeof getNetworkManager> | null = null
   let networkEventHandler: ((event: NetworkEvent) => void) | null = null
+
+  // 尚未消耗的物理时间（秒）
+  let physicsAccumulator = 0
 
   // 当前玩家
   const currentPlayer = () => players.value[currentPlayerIndex.value]
@@ -276,11 +279,25 @@ export const useGameStore = defineStore('game', () => {
     pocketedThisTurn.value = []
   }
 
-  /** 游戏主循环 - 每帧调用 */
-  function update(): void {
-    if (phase.value !== GP.BALLS_MOVING) return
+  /**
+   * 游戏主循环 - 每帧调用
+   * @param frameSeconds 距上一帧的真实时间（秒），按固定步长 PHYSICS_DT 消耗
+   */
+  function update(frameSeconds: number): void {
+    if (phase.value !== GP.BALLS_MOVING) {
+      physicsAccumulator = 0
+      return
+    }
 
-    // 物理步进
+    // 切到后台再回来时 frameSeconds 可能很大，限制单帧最多推进 0.1 秒
+    physicsAccumulator += Math.min(frameSeconds, 0.1)
+    while (physicsAccumulator >= PHYSICS_DT && phase.value === GP.BALLS_MOVING) {
+      physicsAccumulator -= PHYSICS_DT
+      stepPhysics()
+    }
+  }
+
+  function stepPhysics(): void {
     physicsWorld.step()
 
     // 追踪第一个碰撞的球
