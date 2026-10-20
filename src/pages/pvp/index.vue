@@ -2,25 +2,27 @@
   <view class="pvp-page">
     <!-- HUD -->
     <view class="game-hud">
+      <view class="menu-btn" @tap="openMenu"><text>☰</text></view>
       <view class="player-info left" :class="{ active: currentPlayerIndex === 0 }">
         <text class="player-name">{{ players[0].name }}</text>
         <text class="player-group" v-if="players[0].group !== 'none'">
           {{ players[0].group === 'solid' ? '全色球' : '花色球' }}
         </text>
-        <text class="player-score">{{ players[0].pocketedCount }}/7</text>
-        <text class="player-you" v-if="isOnlineMode && myPlayerIndex === 0">你</text>
+        <text class="player-score" v-if="gameMode === 'practice'">{{ shotCount }} 杆</text>
+        <text class="player-score" v-else>{{ players[0].pocketedCount }}/7</text>
+        <text class="player-you" v-if="(isOnlineMode && myPlayerIndex === 0) || gameMode === 'ai'">你</text>
       </view>
 
       <view class="turn-info">
         <text class="turn-text" v-if="foulMessage" style="color: #ff6b6b;">{{ foulMessage }}</text>
         <text class="turn-text" v-else-if="phase === 'ball_in_hand'" style="color: #ffd93d;">
-          {{ isMyTurnInOnline ? '请放置白球' : '对手放置白球...' }}
+          {{ isMyTurnInOnline ? '请放置白球' : (gameMode === 'ai' ? '电脑放置白球...' : '对手放置白球...') }}
         </text>
         <text class="turn-text" v-else-if="phase === 'game_over'" style="color: #6bcb77;">
           {{ winner !== null ? players[winner].name + ' 获胜!' : '' }}
         </text>
-        <text class="turn-text" v-else-if="isOnlineMode && !isMyTurnInOnline" style="color: #8888aa;">
-          等待对手击球...
+        <text class="turn-text" v-else-if="!isMyTurnInOnline" style="color: #8888aa;">
+          {{ gameMode === 'ai' ? '电脑思考中...' : '等待对手击球...' }}
         </text>
         <text class="turn-text" v-else>
           {{ players[currentPlayerIndex].name }} 的回合{{ turnSuffix }}
@@ -28,7 +30,7 @@
         <text class="turn-count">回合 {{ turnCount }}</text>
       </view>
 
-      <view class="player-info right" :class="{ active: currentPlayerIndex === 1 }">
+      <view class="player-info right" v-if="gameMode !== 'practice'" :class="{ active: currentPlayerIndex === 1 }">
         <text class="player-name">{{ players[1].name }}</text>
         <text class="player-group" v-if="players[1].group !== 'none'">
           {{ players[1].group === 'solid' ? '全色球' : '花色球' }}
@@ -110,11 +112,34 @@
       </view>
     </view>
 
+    <!-- 中央提示：犯规 / 分组等，几秒后自动消失 -->
+    <view class="notice-banner" v-if="visibleNotice" :class="visibleNotice.kind" :key="visibleNotice.id">
+      <text>{{ visibleNotice.text }}</text>
+    </view>
+
+    <!-- 暂停菜单 -->
+    <view class="game-over-overlay" v-if="showMenu">
+      <view class="game-over-card">
+        <text class="game-over-title">暂停</text>
+        <view class="game-over-btn" @tap="closeMenu"><text style="color: #fff; font-size: 30rpx;">继续</text></view>
+        <view class="game-over-btn secondary" v-if="!isOnlineMode" @tap="menuRestart">
+          <text style="color: #ddd; font-size: 30rpx;">重新开始</text>
+        </view>
+        <view class="game-over-btn secondary" v-if="gameMode !== 'practice' && phase !== 'game_over'" @tap="menuResign">
+          <text style="color: #ff8a8a; font-size: 30rpx;">认输</text>
+        </view>
+        <view class="game-over-btn secondary" @tap="toggleSound">
+          <text style="color: #ddd; font-size: 30rpx;">音效：{{ soundOn ? '开' : '关' }}</text>
+        </view>
+        <view class="game-over-btn secondary" @tap="goHome"><text style="color: #aaa; font-size: 30rpx;">返回首页</text></view>
+      </view>
+    </view>
+
     <!-- 游戏结束弹窗 -->
     <view class="game-over-overlay" v-if="phase === 'game_over'">
       <view class="game-over-card">
-        <text class="game-over-title">游戏结束</text>
-        <text class="game-over-winner" v-if="winner !== null">{{ players[winner].name }} 获胜!</text>
+        <text class="game-over-title">{{ gameMode === 'practice' ? '练习完成' : '游戏结束' }}</text>
+        <text class="game-over-winner" v-if="winner !== null && gameMode !== 'practice'">{{ players[winner].name }} 获胜!</text>
         <text class="game-over-reason">{{ winReason }}</text>
         <view class="game-over-status" v-if="isOnlineMode && opponentDisconnected">
           <text>对手已断开连接</text>
@@ -149,6 +174,7 @@ import { AudioEngine } from '../../engine/audio/AudioEngine'
 import { Vector2 } from '../../engine/physics/Vector2'
 import { TABLE_WIDTH, TABLE_HEIGHT, BALL_RADIUS, POCKETS, BREAK_LINE_X } from '../../engine/physics/TableSpec'
 import { POCKET_NAMES } from '../../engine/game/GameState'
+import { AIPlayer, type AIDifficulty } from '../../engine/ai/AIPlayer'
 
 /** 点击袋口中心多远以内算选中该袋口（游戏单位） */
 const POCKET_TAP_RADIUS = 5
@@ -184,18 +210,92 @@ let powerTrackRect: DOMRect | null = null
 // 从store访问（storeToRefs 保持响应式）
 const {
   phase, players, currentPlayerIndex, turnCount, winner, winReason, foulMessage, calledPocket,
+  gameMode, notice, shotCount,
   isOnlineMode, myPlayerIndex, networkStatus,
   opponentDisconnected, rematchRequested, opponentRequestedRematch,
 } = storeToRefs(gameStore)
 
-/** 在线模式下是否是我的回合 */
+/** 是否轮到本机玩家操作（在线：轮到我；人机：轮到玩家1；本地/练习：总是） */
 const isMyTurnInOnline = computed(() => {
-  if (!isOnlineMode.value) return true
-  return currentPlayerIndex.value === myPlayerIndex.value
+  void currentPlayerIndex.value
+  void gameMode.value
+  return gameStore.isMyTurn()
 })
 
-/** 是否可以操作（换手遮罩未显示，且在线模式下轮到我） */
-const canAct = computed(() => !showTurnHandoff.value && isMyTurnInOnline.value)
+/** 是否可以操作（无遮罩/菜单，且轮到本机） */
+const canAct = computed(() => !showTurnHandoff.value && !showMenu.value && isMyTurnInOnline.value)
+
+// === 暂停菜单 / 提示 ===
+const showMenu = ref(false)
+const soundOn = ref(true)
+const visibleNotice = ref<{ id: number; text: string; kind: string } | null>(null)
+let noticeTimer: ReturnType<typeof setTimeout> | undefined
+watch(notice, n => {
+  clearTimeout(noticeTimer)
+  visibleNotice.value = n
+  if (n) noticeTimer = setTimeout(() => { visibleNotice.value = null }, 2600)
+})
+
+function openMenu() {
+  cueController.reset()
+  activeDrag = null
+  powering.value = false
+  powerPercent.value = 0
+  showMenu.value = true
+}
+function closeMenu() { showMenu.value = false }
+function menuRestart() {
+  showMenu.value = false
+  restart()
+}
+function menuResign() {
+  showMenu.value = false
+  gameStore.resign()
+}
+function toggleSound() {
+  soundOn.value = !soundOn.value
+  audioEngine.setEnabled(soundOn.value)
+}
+
+// === 电脑玩家 ===
+let aiPlayer: AIPlayer | null = null
+let aiTimer: ReturnType<typeof setTimeout> | undefined
+const AI_THINK_MS = 900
+
+/** 轮到电脑时，稍作停顿后放白球 / 出杆 */
+function scheduleAI() {
+  clearTimeout(aiTimer)
+  if (gameMode.value !== 'ai' || !aiPlayer || isMyTurnInOnline.value) return
+  if (phase.value !== 'aiming' && phase.value !== 'break_shot' && phase.value !== 'ball_in_hand') return
+  aiTimer = setTimeout(runAITurn, AI_THINK_MS)
+}
+
+function runAITurn() {
+  if (!aiPlayer || isMyTurnInOnline.value || showMenu.value) {
+    if (showMenu.value) aiTimer = setTimeout(runAITurn, 300)
+    return
+  }
+  const ctx = {
+    balls: gameStore.physicsWorld.balls,
+    targets: gameStore.targetBalls(),
+    isBreakShot: phase.value === 'break_shot',
+    needsCalledPocket: gameStore.needsCalledPocket(),
+  }
+  if (phase.value === 'ball_in_hand') {
+    gameStore.placeCueBall(aiPlayer.planPlacement(ctx, p => gameStore.isValidCueBallPosition(p)))
+    return // 放好后阶段变为 aiming，watch 会再次调度出杆
+  }
+  const plan = aiPlayer.planShot(ctx)
+  if (plan.calledPocket !== null) gameStore.callPocket(plan.calledPocket)
+  // 先把球杆转到出杆方向，展示一下再击球
+  cueController.aimAngle = plan.angle
+  aiTimer = setTimeout(() => {
+    if (isMyTurnInOnline.value || !isAimPhase.value) return
+    renderer.startShootAnimation()
+    audioEngine.playCueShot(plan.speed)
+    gameStore.shoot(plan.speed, plan.angle, plan.spinX, plan.spinY)
+  }, 600)
+}
 
 const isAimPhase = computed(() => phase.value === 'aiming' || phase.value === 'break_shot')
 const showAimControls = computed(() => canAct.value && isAimPhase.value)
@@ -281,8 +381,14 @@ function parsePageOptions() {
   if (options.mode === 'online' && options.myIndex !== undefined) {
     const myIndex = parseInt(options.myIndex, 10)
     gameStore.initOnlineMode(myIndex)
+  } else if (options.mode === 'ai') {
+    const difficulty = (['easy', 'normal', 'hard'].includes(options.difficulty) ? options.difficulty : 'normal') as AIDifficulty
+    aiPlayer = new AIPlayer(difficulty)
+    gameStore.initGame('ai')
+  } else if (options.mode === 'practice') {
+    gameStore.initGame('practice')
   } else {
-    gameStore.initGame()
+    gameStore.initGame('local')
   }
 }
 
@@ -298,6 +404,7 @@ onMounted(() => {
       if (canvasReady) {
         enterPhase()
         gameLoop()
+        scheduleAI()
       }
     }, 300)
   })
@@ -311,6 +418,8 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', onMouseUp)
   window.removeEventListener('resize', onResize)
   clearTimeout(resizeTimer)
+  clearTimeout(aiTimer)
+  clearTimeout(noticeTimer)
   if (gameStore.isOnlineMode) {
     gameStore.leaveOnlineMode()
   }
@@ -405,17 +514,19 @@ function gameLoop(now: number = performance.now()) {
       : null
     renderer.breakArea = showTargets && phase.value === 'break_shot'
     renderer.highlightBalls = showTargets
-      ? new Set(gameStore.ruleEngine.getTargetBalls(gameStore.physicsWorld.balls, gameStore.currentPlayer()).map(b => b.number))
+      ? new Set(gameStore.targetBalls().map(b => b.number))
       : new Set()
 
     // 瞄准阶段一直显示球杆和瞄准线（击球动画期间也显示球杆）
-    if (cueBall && isMyTurnInOnline.value && isAimPhase.value && !showTurnHandoff.value) {
+    const aiAiming = gameMode.value === 'ai' && !isMyTurnInOnline.value
+    if (cueBall && (isMyTurnInOnline.value || aiAiming) && isAimPhase.value && !showTurnHandoff.value) {
       cueController.setCueBallPosition(cueBall.position)
       renderer.cueStick.visible = true
       renderer.cueStick.position = cueBall.position
       renderer.cueStick.angle = cueController.aimAngle
       renderer.cueStick.power = cueController.power
-      renderer.aimLine = { start: cueBall.position, end: cueController.getAimLineEnd() }
+      // 电脑出杆只显示球杆，不显示预测线
+      renderer.aimLine = aiAiming ? null : { start: cueBall.position, end: cueController.getAimLineEnd() }
     } else {
       renderer.aimLine = null
       if (!renderer.cueStick.shooting) renderer.cueStick.visible = false
@@ -453,7 +564,7 @@ function enterPhase() {
 
 /** 默认瞄准离白球最近的可击打目标球 */
 function aimAtNearestTarget(from: Vector2) {
-  const targets = gameStore.ruleEngine.getTargetBalls(gameStore.physicsWorld.balls, gameStore.currentPlayer())
+  const targets = gameStore.targetBalls()
   let nearest: Vector2 | null = null
   for (const ball of targets) {
     if (!nearest || ball.position.distFrom(from) < nearest.distFrom(from)) nearest = ball.position
@@ -463,11 +574,12 @@ function aimAtNearestTarget(from: Vector2) {
 
 watch([phase, currentPlayerIndex], () => {
   if (canvasReady) enterPhase()
+  scheduleAI()
 })
 
 // 本地双人：换手时显示遮罩（开局和重开不显示）
 watch(currentPlayerIndex, (nextPlayer, previousPlayer) => {
-  if (isOnlineMode.value || nextPlayer === previousPlayer) return
+  if (gameMode.value !== 'local' || nextPlayer === previousPlayer) return
   if (turnCount.value === 0 || phase.value === 'game_over') return
   showTurnHandoff.value = true
 })
@@ -683,6 +795,7 @@ function confirmTurnHandoff() {
 function restart() {
   showTurnHandoff.value = false
   gameStore.initGame()
+  scheduleAI()
 }
 
 function requestRematch() {
@@ -709,6 +822,46 @@ function goHome() {
   height: 100vh;
   background-color: #0a0a14;
   overflow: hidden;
+}
+
+.menu-btn {
+  width: 56rpx;
+  height: 56rpx;
+  margin-right: 8rpx;
+  border-radius: 10rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(100, 100, 255, 0.15);
+  color: #e0e0ff;
+  font-size: 30rpx;
+  flex-shrink: 0;
+}
+
+.notice-banner {
+  position: fixed;
+  left: 50%;
+  top: 22%;
+  transform: translateX(-50%);
+  padding: 20rpx 48rpx;
+  border-radius: 16rpx;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #fff;
+  background-color: rgba(30, 60, 120, 0.92);
+  box-shadow: 0 8rpx 30rpx rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 50;
+  animation: notice-in 0.25s ease-out;
+}
+
+.notice-banner.foul {
+  background-color: rgba(170, 40, 40, 0.92);
+}
+
+@keyframes notice-in {
+  from { opacity: 0; transform: translate(-50%, -12rpx); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 .game-hud {

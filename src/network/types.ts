@@ -166,6 +166,10 @@ export interface ShootMessage {
   timestamp: number
 }
 
+export interface ResignMessage {
+  type: 'resign'
+}
+
 export interface PlaceCueBallMessage {
   type: 'place_cue_ball'
   position: { x: number; y: number }
@@ -215,6 +219,7 @@ export interface GameSnapshotMessage {
 export type GameMessage =
   | ShootMessage
   | PlaceCueBallMessage
+  | ResignMessage
   | GameReadyMessage
   | RematchRequestMessage
   | RematchAcceptMessage

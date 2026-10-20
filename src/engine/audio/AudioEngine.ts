@@ -13,6 +13,13 @@ export class AudioEngine {
   private lastCollisionAt = 0
   private lastPocketAt = 0
 
+  /** 菜单中的音效开关（与浏览器不支持时的自动禁用分开） */
+  private muted = false
+
+  setEnabled(on: boolean): void {
+    this.muted = !on
+  }
+
   async unlock(): Promise<void> {
     if (!this.enabled) return
     const context = this.getContext()
@@ -67,7 +74,7 @@ export class AudioEngine {
     pitchDrop: number,
     delay = 0,
   ): void {
-    if (!this.enabled) return
+    if (!this.enabled || this.muted) return
 
     try {
       const context = this.getContext()

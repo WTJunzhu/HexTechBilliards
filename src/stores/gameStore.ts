@@ -90,6 +90,16 @@ function computeChecksum(balls: Ball[]): string {
   return hash.toString(36)
 }
 
+/** 对局模式：本地双人 / 在线 / 单人练习 / 人机对战（电脑为玩家2） */
+export type GameMode = 'local' | 'online' | 'practice' | 'ai'
+
+/** 屏幕中央的短暂提示（犯规、分组、开球重摆等） */
+export interface GameNotice {
+  id: number
+  text: string
+  kind: 'foul' | 'info'
+}
+
 export const useGameStore = defineStore('game', () => {
   // === 核心引擎 ===
   // markRaw：引擎对象每帧高频读写，不需要 Vue 响应式代理
@@ -98,6 +108,11 @@ export const useGameStore = defineStore('game', () => {
 
   // === 游戏状态 ===
   const phase = ref<GP>(GP.IDLE)
+  const gameMode = ref<GameMode>('local')
+  const notice = ref<GameNotice | null>(null)
+  let noticeSeq = 0
+  /** 练习模式击球次数 */
+  const shotCount = ref(0)
   const players = ref<PlayerType[]>([
     { index: 0, name: '玩家1', group: BG.NONE, pocketedCount: 0 },
     { index: 1, name: '玩家2', group: BG.NONE, pocketedCount: 0 },
@@ -148,12 +163,24 @@ export const useGameStore = defineStore('game', () => {
 
   /** 是否是我的回合（在线模式下只有轮到我才能操作） */
   const isMyTurn = () => {
-    if (!isOnlineMode.value) return true
-    return currentPlayerIndex.value === myPlayerIndex.value
+    if (gameMode.value === 'online') return currentPlayerIndex.value === myPlayerIndex.value
+    if (gameMode.value === 'ai') return currentPlayerIndex.value === 0
+    return true
+  }
+
+  function showNotice(text: string, kind: GameNotice['kind'] = 'info'): void {
+    notice.value = { id: ++noticeSeq, text, kind }
   }
 
   /** 初始化/重新开始游戏 */
-  function initGame(): void {
+  function initGame(mode?: GameMode): void {
+    if (mode) gameMode.value = mode
+    if (gameMode.value !== 'online') {
+      players.value[0].name = gameMode.value === 'practice' ? '练习' : '玩家1'
+      players.value[1].name = gameMode.value === 'ai' ? '电脑' : '玩家2'
+    }
+    shotCount.value = 0
+    notice.value = null
     physicsWorld.balls = createInitialBalls()
     phase.value = GP.BREAK_SHOT
     players.value[0].group = BG.NONE
@@ -181,6 +208,7 @@ export const useGameStore = defineStore('game', () => {
    */
   function initOnlineMode(myIndex: number): void {
     isOnlineMode.value = true
+    gameMode.value = 'online'
     myPlayerIndex.value = myIndex
 
     // 绑定网络事件
@@ -199,6 +227,7 @@ export const useGameStore = defineStore('game', () => {
       networkEventHandler = null
     }
     isOnlineMode.value = false
+    gameMode.value = 'local'
     myPlayerIndex.value = -1
   }
 
@@ -266,6 +295,12 @@ export const useGameStore = defineStore('game', () => {
       case 'rematch_accept':
         initGame()
         break
+
+      case 'resign':
+        winner.value = myPlayerIndex.value
+        winReason.value = '对手认输'
+        phase.value = GP.GAME_OVER
+        break
     }
   }
 
@@ -296,6 +331,7 @@ export const useGameStore = defineStore('game', () => {
     if (!cueBall) return
 
     cueBall.shoot(power, angle, spinX, spinY)
+    shotCount.value++
     phase.value = GP.BALLS_MOVING
     firstHitBallThisTurn.value = null
     pocketedThisTurn.value = []
@@ -359,6 +395,10 @@ export const useGameStore = defineStore('game', () => {
 
   /** 回合结束判定 */
   function endTurn(): void {
+    if (gameMode.value === 'practice') {
+      endPracticeTurn()
+      return
+    }
     const breakShot = isBreakShot.value
     isBreakShot.value = false
 
@@ -388,6 +428,7 @@ export const useGameStore = defineStore('game', () => {
       }
       isBreakShot.value = true
       foulMessage.value = `开球打进8号球，重新摆球，由${currentPlayer().name}开球`
+      showNotice(foulMessage.value)
       finishTurn(GP.BREAK_SHOT)
       return
     }
@@ -401,6 +442,8 @@ export const useGameStore = defineStore('game', () => {
       const decider = mixed && firstHit && !firstHit.isEight ? firstHit : groupBalls[0]
       if (decider && ruleEngine.assignGroups(decider, currentPlayer(), otherPlayer(), breakShot)) {
         groupsAssigned.value = true
+        const groupName = currentPlayer().group === BG.SOLID ? '全色球' : '花色球'
+        showNotice(`${currentPlayer().name} 打${groupName}`)
       }
     }
 
@@ -429,6 +472,7 @@ export const useGameStore = defineStore('game', () => {
       }
       currentPlayerIndex.value = 1 - currentPlayerIndex.value
       foulMessage.value = `犯规：${result.foulReason}，${currentPlayer().name}获得自由球`
+      showNotice(foulMessage.value, 'foul')
       finishTurn(GP.BALL_IN_HAND)
       return
     }
@@ -438,6 +482,42 @@ export const useGameStore = defineStore('game', () => {
       currentPlayerIndex.value = 1 - currentPlayerIndex.value
     }
     finishTurn(GP.AIMING)
+  }
+
+  /**
+   * 练习模式结算：不判犯规和胜负，白球落袋则自由摆放，目标球全部打完即完成。
+   * 8 号球也只是普通目标球
+   */
+  function endPracticeTurn(): void {
+    isBreakShot.value = false
+    const objectLeft = physicsWorld.balls.some(b => b.active && !b.isCue)
+    if (!objectLeft) {
+      winner.value = 0
+      winReason.value = `练习完成，共 ${shotCount.value} 杆清台`
+      finishTurn(GP.GAME_OVER)
+      return
+    }
+    const cueBall = physicsWorld.balls.find(b => b.isCue)
+    if (cueBall && !cueBall.active) {
+      cueBall.state = BallState.PLACING
+      showNotice('白球落袋，重新摆放白球', 'foul')
+      finishTurn(GP.BALL_IN_HAND)
+      return
+    }
+    foulMessage.value = null
+    finishTurn(GP.AIMING)
+  }
+
+  /** 认输：当前操作方（在线为自己）判负 */
+  function resign(): void {
+    if (phase.value === GP.GAME_OVER || gameMode.value === 'practice') return
+    const loser = gameMode.value === 'online' ? myPlayerIndex.value
+      : gameMode.value === 'ai' ? 0
+        : currentPlayerIndex.value
+    if (gameMode.value === 'online') networkManager?.sendGameMessage({ type: 'resign' })
+    winner.value = 1 - loser
+    winReason.value = `${players.value[loser].name} 认输`
+    phase.value = GP.GAME_OVER
   }
 
   /** 进入下一阶段并清理本回合数据 */
@@ -566,7 +646,14 @@ export const useGameStore = defineStore('game', () => {
 
   /** 当前玩家是否需要先指定袋口才能击球 */
   function needsCalledPocket(): boolean {
+    if (gameMode.value === 'practice') return false
     return ruleEngine.needsCalledPocket(physicsWorld.balls, currentPlayer())
+  }
+
+  /** 当前玩家可合法首碰的目标球（练习模式下所有球都可打） */
+  function targetBalls(): Ball[] {
+    if (gameMode.value === 'practice') return physicsWorld.balls.filter(b => b.active && !b.isCue)
+    return ruleEngine.getTargetBalls(physicsWorld.balls, currentPlayer())
   }
 
   /** 本地放置白球 */
@@ -588,7 +675,7 @@ export const useGameStore = defineStore('game', () => {
     // 状态
     phase, players, currentPlayerIndex, turnCount,
     groupsAssigned, winner, winReason,
-    foulMessage, aimAngle, shotPower, calledPocket,
+    foulMessage, aimAngle, shotPower, calledPocket, gameMode, notice, shotCount,
     // 在线模式状态
     isOnlineMode, myPlayerIndex, networkStatus,
     opponentDisconnected, rematchRequested, opponentRequestedRematch,
@@ -596,7 +683,7 @@ export const useGameStore = defineStore('game', () => {
     physicsWorld, ruleEngine,
     // 方法
     initGame, shoot, update, placeCueBall, isValidCueBallPosition,
-    callPocket, needsCalledPocket,
+    callPocket, needsCalledPocket, targetBalls, resign,
     currentPlayer, otherPlayer,
     firstHitBallThisTurn,
     // 在线模式方法

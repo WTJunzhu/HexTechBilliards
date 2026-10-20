@@ -12,6 +12,22 @@
         <text class="mode-desc">远程联机 · 创建/加入房间</text>
       </view>
 
+      <view class="mode-btn ai-btn">
+        <text class="mode-icon">🤖</text>
+        <text class="mode-name">人机对战</text>
+        <view class="difficulty-row">
+          <view class="difficulty-btn" v-for="d in difficulties" :key="d.key" @tap="startAI(d.key)">
+            <text>{{ d.label }}</text>
+          </view>
+        </view>
+      </view>
+
+      <view class="mode-btn practice-btn" @tap="startPractice">
+        <text class="mode-icon">🎯</text>
+        <text class="mode-name">练习模式</text>
+        <text class="mode-desc">单人自由击球 · 不判犯规</text>
+      </view>
+
       <view class="mode-btn pvp-btn" @tap="startLocalPvP">
         <text class="mode-icon">⚔️</text>
         <text class="mode-name">本地对战</text>
@@ -26,7 +42,7 @@
     </view>
 
     <view class="footer">
-      <text class="footer-text">Phase 1 MVP · 中式八球 · 在线联机</text>
+      <text class="footer-text">中式八球 · 人机 / 练习 / 本地 / 在线</text>
     </view>
   </view>
 </template>
@@ -36,8 +52,22 @@ function startOnline() {
   uni.navigateTo({ url: '/pages/lobby/index' })
 }
 
+const difficulties = [
+  { key: 'easy', label: '简单' },
+  { key: 'normal', label: '普通' },
+  { key: 'hard', label: '困难' },
+]
+
 function startLocalPvP() {
-  uni.navigateTo({ url: '/pages/pvp/index' })
+  uni.navigateTo({ url: '/pages/pvp/index?mode=local' })
+}
+
+function startAI(difficulty: string) {
+  uni.navigateTo({ url: `/pages/pvp/index?mode=ai&difficulty=${difficulty}` })
+}
+
+function startPractice() {
+  uni.navigateTo({ url: '/pages/pvp/index?mode=practice' })
 }
 
 function comingSoon() {
@@ -115,6 +145,39 @@ function comingSoon() {
 .pvp-btn:active {
   transform: scale(0.98);
   background: linear-gradient(135deg, #0d3a6c 0%, #1565c0 100%);
+}
+
+.ai-btn {
+  background: linear-gradient(135deg, #4a2a10 0%, #a35a12 100%);
+  border: 2rpx solid rgba(255, 180, 100, 0.3);
+}
+
+.difficulty-row {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 8rpx;
+}
+
+.difficulty-btn {
+  padding: 10rpx 32rpx;
+  border-radius: 12rpx;
+  background-color: rgba(0, 0, 0, 0.3);
+  border: 1rpx solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+  font-size: 26rpx;
+}
+
+.difficulty-btn:active {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.practice-btn {
+  background: linear-gradient(135deg, #10404a 0%, #00838f 100%);
+  border: 2rpx solid rgba(100, 230, 255, 0.3);
+}
+
+.practice-btn:active {
+  transform: scale(0.98);
 }
 
 .boss-btn {
