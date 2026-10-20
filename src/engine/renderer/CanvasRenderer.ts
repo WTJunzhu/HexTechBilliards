@@ -429,6 +429,7 @@ export class CanvasRenderer {
         }
         const z = -Math.sqrt(1 - r2)
         // 球体坐标 = Mᵀ · 世界坐标
+        const bx = m[0] * x + m[3] * y + m[6] * z
         const by = m[1] * x + m[4] * y + m[7] * z
         const bz = m[2] * x + m[5] * y + m[8] * z
 
@@ -437,6 +438,10 @@ export class CanvasRenderer {
         const offStripe = ball.isStripe && Math.abs(by) > 0.45
         if (onNumberDisc || offStripe) {
           r = 250; g = 250; b = 245
+        }
+        // 训练母球：上下左右前后六个方向各一个红点，便于看清白球的旋转
+        if (ball.isCue && Math.max(Math.abs(bx), Math.abs(by), Math.abs(bz)) > CUE_DOT_COS) {
+          r = 214; g = 40; b = 40
         }
         // 简单的球面明暗：边缘稍暗
         const shade = 0.62 + 0.38 * -z
@@ -866,6 +871,9 @@ function raySegmentIntersection(origin: Vector2, dir: Vector2, a: Vector2, b: Ve
   const u = ao.cross(dir) / denom
   return t > 0 && u >= 0 && u <= 1 ? t : null
 }
+
+/** 母球红点大小：点中心与球面点夹角的余弦阈值（约 0.2 个半径） */
+const CUE_DOT_COS = Math.sqrt(1 - 0.2 * 0.2)
 
 const rgbCache = new Map<string, [number, number, number]>()
 function hexToRgb(color: string): [number, number, number] {
