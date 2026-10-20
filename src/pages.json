@@ -25,6 +25,8 @@
     "navigationBarTextStyle": "black",
     "navigationBarTitleText": "HexTechBilliards",
     "navigationBarBackgroundColor": "#1a1a2e",
-    "backgroundColor": "#1a1a2e"
+    "backgroundColor": "#1a1a2e",
+    "rpxCalcMaxDeviceWidth": 480,
+    "rpxCalcBaseDeviceWidth": 375
   }
 }

@@ -25,9 +25,15 @@ export class CanvasRenderer {
   private scale: number = RENDER_SCALE
   private forceFields: ForceField[] = []
 
-  /** 球桌在 canvas 中的偏移（居中留白） */
+  /** 球桌在 canvas 中的偏移（居中留白），以未旋转的布局计算 */
   private tableOffsetX: number = 0
   private tableOffsetY: number = 0
+
+  /**
+   * 竖屏时把球桌逆时针旋转 90° 竖放（开球区在下方），让球显示得更大。
+   * 所有绘制都在未旋转的布局里进行，由 canvas 变换统一旋转；输入坐标在 toGame 中反变换。
+   */
+  public rotated = false
 
   /** 瞄准线 */
   public aimLine: { start: Vector2; end: Vector2 } | null = null
@@ -45,6 +51,9 @@ export class CanvasRenderer {
   /** 自由球摆放预览（存在时白球画在预览位置） */
   public placementPreview: { position: Vector2; valid: boolean } | null = null
 
+  /** 当前玩家可击打的目标球号，绘制时加光圈提示 */
+  public highlightBalls: Set<number> = new Set()
+
   /**
    * 使用标准 CanvasRenderingContext2D 初始化
    */
@@ -57,24 +66,29 @@ export class CanvasRenderer {
     const totalWidth = TABLE_WIDTH + CUSHION_WIDTH * 2
     const totalHeight = TABLE_HEIGHT + CUSHION_WIDTH * 2
 
+    // 画布比球桌更"竖"时旋转球桌，此时布局的宽高对调
+    this.rotated = height > width
+    const layoutWidth = this.rotated ? height : width
+    const layoutHeight = this.rotated ? width : height
+
     // 计算缩放：让球桌完整显示在 canvas 中，不留多余 margin
     // 分别按宽度和高度计算，取较小值确保不溢出
-    const scaleByWidth = width / totalWidth
-    const scaleByHeight = height / totalHeight
+    const scaleByWidth = layoutWidth / totalWidth
+    const scaleByHeight = layoutHeight / totalHeight
     this.scale = Math.min(scaleByWidth, scaleByHeight) * 0.98 // 留 2% 呼吸边距
 
     // 计算球桌在 canvas 中的偏移（居中）
     const renderedWidth = totalWidth * this.scale
     const renderedHeight = totalHeight * this.scale
-    this.tableOffsetX = (width - renderedWidth) / 2
-    this.tableOffsetY = (height - renderedHeight) / 2
+    this.tableOffsetX = (layoutWidth - renderedWidth) / 2
+    this.tableOffsetY = (layoutHeight - renderedHeight) / 2
   }
 
   setForceFields(fields: ForceField[]): void {
     this.forceFields = fields
   }
 
-  /** 游戏坐标 → Canvas像素 */
+  /** 游戏坐标 → 布局像素（未旋转；绘制时由 canvas 变换负责旋转） */
   toPixel(pos: Vector2): Vector2 {
     return new Vector2(
       (pos.x + CUSHION_WIDTH) * this.scale + this.tableOffsetX,
@@ -82,8 +96,10 @@ export class CanvasRenderer {
     )
   }
 
-  /** Canvas像素 → 游戏坐标 */
+  /** Canvas像素（屏幕上看到的位置） → 游戏坐标 */
   toGame(pixel: Vector2): Vector2 {
+    // 反变换：屏幕 (px, py) ← 布局 (lx, ly) 经 translate(0, H) + rotate(-90°) 得到 (ly, H - lx)
+    if (this.rotated) pixel = new Vector2(this.canvasHeight - pixel.y, pixel.x)
     return new Vector2(
       (pixel.x - this.tableOffsetX) / this.scale - CUSHION_WIDTH,
       (pixel.y - this.tableOffsetY) / this.scale - CUSHION_WIDTH,
@@ -110,6 +126,12 @@ export class CanvasRenderer {
     ctx.fillStyle = '#0a0a14'
     ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight)
 
+    ctx.save()
+    if (this.rotated) {
+      ctx.translate(0, this.canvasHeight)
+      ctx.rotate(-Math.PI / 2)
+    }
+
     // 绘制球桌
     this.drawTable(ctx)
 
@@ -118,6 +140,13 @@ export class CanvasRenderer {
 
     // 绘制瞄准线与预测轨迹
     this.drawAimLine(ctx, world)
+
+    // 目标球光圈（画在球下方）
+    for (const ball of world.balls) {
+      if (ball.active && this.highlightBalls.has(ball.number)) {
+        this.drawTargetHighlight(ctx, ball)
+      }
+    }
 
     // 绘制球
     for (const ball of world.balls) {
@@ -140,6 +169,7 @@ export class CanvasRenderer {
     if (this.cueStick.visible) {
       this.drawCueStick(ctx)
     }
+    ctx.restore()
 
     // 更新击球动画进度
     if (this.cueStick.shooting) {
@@ -256,9 +286,10 @@ export class CanvasRenderer {
     const pos = this.toPixel(ball.position)
     const radius = ball.radius * this.scale
 
-    // 球阴影
+    // 球阴影（光源固定在屏幕上方，旋转时换算回布局方向）
+    const shadow = this.screenToLayoutDir(0, this.scale * 0.2)
     ctx.beginPath()
-    ctx.arc(pos.x, pos.y + this.scale * 0.2, radius, 0, Math.PI * 2)
+    ctx.arc(pos.x + shadow.x, pos.y + shadow.y, radius, 0, Math.PI * 2)
     ctx.fillStyle = 'rgba(0,0,0,0.3)'
     ctx.fill()
 
@@ -300,13 +331,37 @@ export class CanvasRenderer {
       ctx.font = `bold ${Math.max(radius * 0.65, 8)}px Arial`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText(ball.number.toString(), pos.x, pos.y)
+      // 球桌旋转时把数字转回正向
+      ctx.save()
+      ctx.translate(pos.x, pos.y)
+      if (this.rotated) ctx.rotate(Math.PI / 2)
+      ctx.fillText(ball.number.toString(), 0, 0)
+      ctx.restore()
     }
 
-    // 高光
+    // 高光（屏幕左上方）
+    const shine = this.screenToLayoutDir(-radius * 0.25, -radius * 0.25)
     ctx.beginPath()
-    ctx.arc(pos.x - radius * 0.25, pos.y - radius * 0.25, radius * 0.3, 0, Math.PI * 2)
+    ctx.arc(pos.x + shine.x, pos.y + shine.y, radius * 0.3, 0, Math.PI * 2)
     ctx.fillStyle = 'rgba(255,255,255,0.35)'
+    ctx.fill()
+  }
+
+  /** 屏幕上的偏移方向 → 布局坐标中的偏移（旋转时 屏幕 (dx, dy) 对应 布局 (-dy, dx)） */
+  private screenToLayoutDir(dx: number, dy: number): Vector2 {
+    return this.rotated ? new Vector2(-dy, dx) : new Vector2(dx, dy)
+  }
+
+  /** 目标球外圈的柔和光环 */
+  private drawTargetHighlight(ctx: CanvasRenderingContext2D, ball: Ball): void {
+    const pos = this.toPixel(ball.position)
+    const radius = ball.radius * this.scale
+    const glow = ctx.createRadialGradient(pos.x, pos.y, radius * 0.9, pos.x, pos.y, radius * 1.6)
+    glow.addColorStop(0, 'rgba(255, 230, 120, 0.75)')
+    glow.addColorStop(1, 'rgba(255, 230, 120, 0)')
+    ctx.beginPath()
+    ctx.arc(pos.x, pos.y, radius * 1.6, 0, Math.PI * 2)
+    ctx.fillStyle = glow
     ctx.fill()
   }
 

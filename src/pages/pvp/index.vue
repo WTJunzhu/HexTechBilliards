@@ -80,24 +80,18 @@
       </view>
 
       <view class="bottom-controls">
-        <!-- 已进球展示 -->
+        <!-- 双方剩余目标球 -->
         <view class="pocketed-display">
-          <view class="pocketed-row">
-            <text class="pocketed-label">全色</text>
+          <view class="pocketed-row" v-for="row in targetRows" :key="row.index"
+            :class="{ current: row.index === currentPlayerIndex }">
+            <text class="pocketed-label">{{ row.label }}</text>
             <view class="pocketed-balls-row">
-              <view class="mini-ball" v-for="b in solidPocketedBalls" :key="b.number"
-                :style="{ backgroundColor: b.color }">
+              <view class="mini-ball" v-for="b in row.balls" :key="b.number"
+                :class="{ stripe: b.stripe }"
+                :style="b.stripe ? { borderColor: b.color } : { backgroundColor: b.color }">
                 <text class="mini-ball-num">{{ b.number }}</text>
               </view>
-            </view>
-          </view>
-          <view class="pocketed-row">
-            <text class="pocketed-label">花色</text>
-            <view class="pocketed-balls-row">
-              <view class="mini-ball stripe" v-for="b in stripePocketedBalls" :key="b.number"
-                :style="{ borderColor: b.color }">
-                <text class="mini-ball-num">{{ b.number }}</text>
-              </view>
+              <text class="pocketed-empty" v-if="row.hint">{{ row.hint }}</text>
             </view>
           </view>
         </view>
@@ -153,7 +147,7 @@ import { CanvasRenderer } from '../../engine/renderer/CanvasRenderer'
 import { CueController } from '../../engine/input/CueController'
 import { AudioEngine } from '../../engine/audio/AudioEngine'
 import { Vector2 } from '../../engine/physics/Vector2'
-import { TABLE_WIDTH, TABLE_HEIGHT, BALL_RADIUS, isSolidBall, isStripeBall } from '../../engine/physics/TableSpec'
+import { TABLE_WIDTH, TABLE_HEIGHT, BALL_RADIUS } from '../../engine/physics/TableSpec'
 
 const gameStore = useGameStore()
 const renderer = new CanvasRenderer()
@@ -234,16 +228,27 @@ const phaseHint = computed(() => {
   }
 })
 
-/** 已进袋的球（物理世界不是响应式的，依赖 turnCount/phase 在回合结束时刷新） */
-function pocketedBalls(filter: (n: number) => boolean) {
+/**
+ * 双方剩余目标球（物理世界不是响应式的，依赖 turnCount/phase 在回合结束时刷新）
+ * 未分组时提示分组规则；已分组显示本组剩余球，清完后显示 8 号
+ */
+const targetRows = computed(() => {
   void turnCount.value
   void phase.value
-  return gameStore.physicsWorld.balls
-    .filter(b => !b.active && filter(b.number))
-    .map(b => ({ number: b.number, color: b.color }))
-}
-const solidPocketedBalls = computed(() => pocketedBalls(isSolidBall))
-const stripePocketedBalls = computed(() => pocketedBalls(isStripeBall))
+  return players.value.map(player => {
+    const groupName = player.group === 'solid' ? '全色' : player.group === 'stripe' ? '花色' : '未分组'
+    const balls = player.group === 'none'
+      ? []
+      : gameStore.ruleEngine.getTargetBalls(gameStore.physicsWorld.balls, player)
+        .map(b => ({ number: b.number, color: b.color, stripe: b.isStripe }))
+    return {
+      index: player.index,
+      label: `${player.name} · ${groupName}`,
+      balls,
+      hint: player.group === 'none' ? '开球后第一个合法进球决定球组' : '',
+    }
+  })
+})
 
 // ---- 页面参数解析 ----
 
@@ -265,6 +270,7 @@ onMounted(() => {
   showTurnHandoff.value = false
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
+  window.addEventListener('resize', onResize)
   nextTick(() => {
     setTimeout(() => {
       createCanvas()
@@ -282,10 +288,27 @@ onUnmounted(() => {
   }
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('resize', onResize)
+  clearTimeout(resizeTimer)
   if (gameStore.isOnlineMode) {
     gameStore.leaveOnlineMode()
   }
 })
+
+/** 窗口尺寸或横竖屏变化后重建画布（防抖，等布局稳定） */
+let resizeTimer: ReturnType<typeof setTimeout> | undefined
+function onResize() {
+  clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => {
+    if (!canvasReady) return
+    // 中断进行中的拖动：旧画布坐标已失效
+    activeDrag = null
+    cueController.reset()
+    powering.value = false
+    powerPercent.value = 0
+    createCanvas()
+  }, 150)
+}
 
 /** 创建原生Canvas元素并插入到容器中 */
 function createCanvas() {
@@ -310,6 +333,10 @@ function createCanvas() {
   canvasEl.style.width = logicalWidth + 'px'
   canvasEl.style.height = logicalHeight + 'px'
   canvasEl.style.display = 'block'
+  // 绝对定位：画布尺寸不参与布局，窗口缩小时容器能先缩小，再按新尺寸重建画布
+  canvasEl.style.position = 'absolute'
+  canvasEl.style.left = '0'
+  canvasEl.style.top = '0'
   canvasEl.style.touchAction = 'none'
 
   ctx = canvasEl.getContext('2d')!
@@ -348,6 +375,13 @@ function gameLoop(now: number = performance.now()) {
   gameStore.update(frameSeconds)
   if (canvasReady && ctx) {
     const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
+
+    // 轮到我操作时高亮可击打的目标球
+    const showTargets = isMyTurnInOnline.value && !showTurnHandoff.value
+      && (isAimPhase.value || phase.value === 'ball_in_hand')
+    renderer.highlightBalls = showTargets
+      ? new Set(gameStore.ruleEngine.getTargetBalls(gameStore.physicsWorld.balls, gameStore.currentPlayer()).map(b => b.number))
+      : new Set()
 
     // 瞄准阶段一直显示球杆和瞄准线（击球动画期间也显示球杆）
     if (cueBall && isMyTurnInOnline.value && isAimPhase.value && !showTurnHandoff.value) {
@@ -732,8 +766,10 @@ function goHome() {
 }
 
 .canvas-wrapper {
+  position: relative;
   width: 100%;
   height: 100%;
+  overflow: hidden;
 }
 
 /* 底部面板 */
@@ -861,6 +897,15 @@ function goHome() {
   min-height: 0;
 }
 
+.pocketed-row.current .pocketed-label {
+  color: #ffd93d;
+}
+
+.pocketed-empty {
+  font-size: 18rpx;
+  color: #666688;
+}
+
 .pocketed-row {
   display: flex;
   align-items: center;
@@ -868,9 +913,9 @@ function goHome() {
 }
 
 .pocketed-label {
-  font-size: 16rpx;
+  font-size: 18rpx;
   color: #8888aa;
-  min-width: 40rpx;
+  min-width: 150rpx;
 }
 
 .pocketed-balls-row {
