@@ -182,6 +182,17 @@ export class RuleEngine {
     return balls.filter(ball => ball.active && this.isGroupBall(ball.number, group)).length
   }
 
+  /**
+   * 当前玩家可以合法首碰的球：未分组时为除8号外的所有目标球，
+   * 已分组时为本组剩余球，本组清完后为8号球
+   */
+  getTargetBalls(balls: Ball[], player: Player): Ball[] {
+    const onTable = balls.filter(ball => ball.active && !ball.isCue)
+    if (player.group === BallGroup.NONE) return onTable.filter(ball => !ball.isEight)
+    const own = onTable.filter(ball => this.isGroupBall(ball.number, player.group))
+    return own.length > 0 ? own : onTable.filter(ball => ball.isEight)
+  }
+
   /** 更新玩家进球计数 */
   updatePlayerScore(balls: Ball[], player: Player): void {
     if (player.group === BallGroup.NONE) return

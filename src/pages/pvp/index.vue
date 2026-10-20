@@ -51,15 +51,27 @@
 
     <!-- 底部控制面板 -->
     <view class="bottom-panel">
-      <!-- 蓄力条 -->
-      <view class="power-bar-container" v-if="canAim && (phase === 'aiming' || phase === 'break_shot')">
-        <view class="power-bar-bg">
-          <view class="power-bar-fill" :style="{ width: powerPercent + '%' }"></view>
+      <!-- 瞄准操作：微调条 + 力度条 -->
+      <view class="aim-controls" v-if="showAimControls">
+        <view class="fine-tune" @touchstart.stop.prevent="onFineTuneStart" @mousedown.stop.prevent="onFineTuneStart">
+          <view class="fine-tune-ticks" :style="{ backgroundPosition: fineTuneOffset + 'px 0' }"></view>
+          <text class="control-label">◀ 微调 ▶</text>
         </view>
-        <text class="power-text">{{ Math.round(powerPercent) }}%</text>
+        <view class="power-track" ref="powerTrack"
+          @touchstart.stop.prevent="onPowerStart" @mousedown.stop.prevent="onPowerStart">
+          <view class="power-bar-fill" :style="{ width: powerPercent + '%' }"></view>
+          <text class="control-label">{{ powerLabel }}</text>
+        </view>
       </view>
-      <!-- 非瞄准时显示提示 -->
-      <view class="power-bar-container placeholder" v-else>
+      <!-- 自由球：拖动桌面移动白球，确认后放下 -->
+      <view class="aim-controls" v-else-if="showPlacementControls">
+        <text class="placement-hint">{{ placementValid ? '拖动桌面移动白球' : '该位置不可放置' }}</text>
+        <view class="confirm-btn" :class="{ disabled: !placementValid }" @tap="confirmPlacement">
+          <text>确认放置</text>
+        </view>
+      </view>
+      <!-- 其他阶段显示提示 -->
+      <view class="aim-controls placeholder" v-else>
         <text class="power-placeholder">{{ phaseHint }}</text>
       </view>
 
@@ -131,12 +143,13 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useGameStore } from '../../stores/gameStore'
 import { CanvasRenderer } from '../../engine/renderer/CanvasRenderer'
 import { CueController } from '../../engine/input/CueController'
 import { AudioEngine } from '../../engine/audio/AudioEngine'
 import { Vector2 } from '../../engine/physics/Vector2'
-import { TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH, isSolidBall, isStripeBall } from '../../engine/physics/TableSpec'
+import { TABLE_WIDTH, TABLE_HEIGHT, BALL_RADIUS, isSolidBall, isStripeBall } from '../../engine/physics/TableSpec'
 
 const gameStore = useGameStore()
 const renderer = new CanvasRenderer()
@@ -144,44 +157,49 @@ const cueController = new CueController()
 const audioEngine = new AudioEngine()
 
 const powerPercent = ref(0)
+const fineTuneOffset = ref(0)
+const powering = ref(false)
+const placementValid = ref(false)
 const showTurnHandoff = ref(false)
-const handoffReady = ref(false)
 const canvasWrapper = ref<HTMLElement | null>(null)
+const powerTrack = ref<{ $el?: HTMLElement } | HTMLElement | null>(null)
 let animationFrameId = 0
 let lastFrameTime = 0
 let canvasReady = false
 let canvasEl: HTMLCanvasElement | null = null
 let ctx: CanvasRenderingContext2D | null = null
-let scale = 1
 let logicalWidth = 0
 let logicalHeight = 0
 
-// 从store访问
-const phase = gameStore.phase
-const players = gameStore.players
-const currentPlayerIndex = gameStore.currentPlayerIndex
-const turnCount = gameStore.turnCount
-const winner = gameStore.winner
-const winReason = gameStore.winReason
-const foulMessage = gameStore.foulMessage
-const isOnlineMode = gameStore.isOnlineMode
-const myPlayerIndex = gameStore.myPlayerIndex
-const networkStatus = gameStore.networkStatus
-const opponentDisconnected = gameStore.opponentDisconnected
-const rematchRequested = gameStore.rematchRequested
-const opponentRequestedRematch = gameStore.opponentRequestedRematch
+/** 当前进行中的拖动操作（桌面瞄准 / 摆放白球 / 微调 / 蓄力） */
+let activeDrag: 'table' | 'place' | 'fineTune' | 'power' | null = null
+let dragLastPixel = Vector2.zero
+let powerTrackRect: DOMRect | null = null
+
+// 从store访问（storeToRefs 保持响应式）
+const {
+  phase, players, currentPlayerIndex, turnCount, winner, winReason, foulMessage,
+  isOnlineMode, myPlayerIndex, networkStatus,
+  opponentDisconnected, rematchRequested, opponentRequestedRematch,
+} = storeToRefs(gameStore)
 
 /** 在线模式下是否是我的回合 */
 const isMyTurnInOnline = computed(() => {
   if (!isOnlineMode.value) return true
-  return gameStore.isMyTurn()
+  return currentPlayerIndex.value === myPlayerIndex.value
 })
 
-/** 是否可以瞄准/击球（在线模式下仅我的回合可操作） */
-const canAim = computed(() => {
-  if (showTurnHandoff.value) return false
-  if (!isOnlineMode.value) return true
-  return gameStore.isMyTurn()
+/** 是否可以操作（换手遮罩未显示，且在线模式下轮到我） */
+const canAct = computed(() => !showTurnHandoff.value && isMyTurnInOnline.value)
+
+const isAimPhase = computed(() => phase.value === 'aiming' || phase.value === 'break_shot')
+const showAimControls = computed(() => canAct.value && isAimPhase.value)
+const showPlacementControls = computed(() => canAct.value && phase.value === 'ball_in_hand')
+
+const powerLabel = computed(() => {
+  if (!powering.value) return '拖动蓄力 →'
+  if (powerPercent.value < CueController.MIN_SHOT_POWER * 100) return '松手取消'
+  return `力度 ${Math.round(powerPercent.value)}%`
 })
 
 const networkStatusText = computed(() => {
@@ -197,25 +215,22 @@ const networkStatusText = computed(() => {
 const phaseHint = computed(() => {
   switch (phase.value) {
     case 'balls_moving': return '球在运动中...'
-    case 'ball_in_hand': return isMyTurnInOnline.value ? '点击桌面放置白球' : '对手放置白球...'
+    case 'ball_in_hand': return isMyTurnInOnline.value ? '' : '对手放置白球...'
     case 'game_over': return '游戏结束'
-    default: return ''
+    default: return isMyTurnInOnline.value ? '' : '等待对手击球...'
   }
 })
 
-/** 已进袋的全色球 */
-const solidPocketedBalls = computed(() => {
+/** 已进袋的球（物理世界不是响应式的，依赖 turnCount/phase 在回合结束时刷新） */
+function pocketedBalls(filter: (n: number) => boolean) {
+  void turnCount.value
+  void phase.value
   return gameStore.physicsWorld.balls
-    .filter(b => !b.active && isSolidBall(b.number))
+    .filter(b => !b.active && filter(b.number))
     .map(b => ({ number: b.number, color: b.color }))
-})
-
-/** 已进袋的花色球 */
-const stripePocketedBalls = computed(() => {
-  return gameStore.physicsWorld.balls
-    .filter(b => !b.active && isStripeBall(b.number))
-    .map(b => ({ number: b.number, color: b.color }))
-})
+}
+const solidPocketedBalls = computed(() => pocketedBalls(isSolidBall))
+const stripePocketedBalls = computed(() => pocketedBalls(isStripeBall))
 
 // ---- 页面参数解析 ----
 
@@ -234,12 +249,14 @@ function parsePageOptions() {
 
 onMounted(() => {
   parsePageOptions()
-  handoffReady.value = true
   showTurnHandoff.value = false
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
   nextTick(() => {
     setTimeout(() => {
       createCanvas()
       if (canvasReady) {
+        enterPhase()
         gameLoop()
       }
     }, 300)
@@ -250,6 +267,8 @@ onUnmounted(() => {
   if (animationFrameId) {
     cancelAnimationFrame(animationFrameId)
   }
+  window.removeEventListener('mousemove', onMouseMove)
+  window.removeEventListener('mouseup', onMouseUp)
   if (gameStore.isOnlineMode) {
     gameStore.leaveOnlineMode()
   }
@@ -287,9 +306,6 @@ function createCanvas() {
   }
   ctx.scale(dpr, dpr)
 
-  const totalTableWidth = TABLE_WIDTH + CUSHION_WIDTH * 2
-  scale = logicalWidth / (totalTableWidth + 4)
-
   renderer.init(ctx, logicalWidth, logicalHeight)
   gameStore.physicsWorld.clearHooks()
   gameStore.physicsWorld.addPostCollisionHook((ball1, ball2) => audioEngine.playBallCollision(ball1, ball2))
@@ -298,40 +314,18 @@ function createCanvas() {
 
   canvasWrapper.value.appendChild(canvasEl)
 
-  console.log('[Canvas] Created native canvas:', logicalWidth, 'x', logicalHeight,
-    'dpr:', dpr, 'scale:', scale.toFixed(2))
+  console.log('[Canvas] Created native canvas:', logicalWidth, 'x', logicalHeight, 'dpr:', dpr)
 
-  // 事件监听
-  canvasEl.addEventListener('mousedown', onMouseDown)
-  canvasEl.addEventListener('mousemove', onMouseMove)
-  canvasEl.addEventListener('mouseup', onMouseUp)
-  canvasEl.addEventListener('touchstart', onTouchStart, { passive: false })
-  canvasEl.addEventListener('touchmove', onTouchMove, { passive: false })
-  canvasEl.addEventListener('touchend', onTouchEnd)
+  // 鼠标 move/up 监听在 window 上，拖出画布后仍能收到
+  canvasEl.addEventListener('mousedown', onCanvasMouseDown)
+  canvasEl.addEventListener('touchstart', onCanvasTouchStart, { passive: false })
 
   // 击球回调
   cueController.onShoot = (power, angle) => {
-    const currentPhase = gameStore.phase
-    if (isOnlineMode.value && !gameStore.isMyTurn()) return
-    if (currentPhase === 'aiming' || currentPhase === 'break_shot') {
-      // 启动击球动画
-      renderer.startShootAnimation()
-      audioEngine.playCueShot(power)
-      gameStore.shoot(power, angle)
-    }
-  }
-
-  cueController.onUpdateAim = () => {
-    if (isOnlineMode.value && !gameStore.isMyTurn()) return
-    const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
-    renderer.aimLine = {
-      start: cueBall?.position || Vector2.zero,
-      end: cueController.getAimLineEnd(),
-    }
-  }
-
-  cueController.onUpdatePower = (power) => {
-    powerPercent.value = power * 100
+    if (!canAct.value || !isAimPhase.value) return
+    renderer.startShootAnimation()
+    audioEngine.playCueShot(power)
+    gameStore.shoot(power, angle)
   }
 }
 
@@ -340,123 +334,222 @@ function gameLoop(now: number = performance.now()) {
   lastFrameTime = now
   gameStore.update(frameSeconds)
   if (canvasReady && ctx) {
-    const currentPhase = gameStore.phase
-    const isMyTurnNow = !isOnlineMode.value || gameStore.isMyTurn()
     const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
 
-    // 只在我的回合显示球杆和瞄准线（击球动画期间也显示）
-    const isCueVisible = cueBall && isMyTurnNow && (
-      currentPhase === 'aiming' || currentPhase === 'break_shot' || renderer.cueStick.shooting
-    )
-
-    if (isCueVisible) {
+    // 瞄准阶段一直显示球杆和瞄准线（击球动画期间也显示球杆）
+    if (cueBall && isMyTurnInOnline.value && isAimPhase.value && !showTurnHandoff.value) {
+      cueController.setCueBallPosition(cueBall.position)
       renderer.cueStick.visible = true
-      renderer.cueStick.position = cueBall!.position
+      renderer.cueStick.position = cueBall.position
       renderer.cueStick.angle = cueController.aimAngle
       renderer.cueStick.power = cueController.power
+      renderer.aimLine = { start: cueBall.position, end: cueController.getAimLineEnd() }
     } else {
-      if (!renderer.cueStick.shooting) {
-        renderer.cueStick.visible = false
-        renderer.aimLine = null
-      }
+      renderer.aimLine = null
+      if (!renderer.cueStick.shooting) renderer.cueStick.visible = false
     }
 
-    renderer.render(gameStore.physicsWorld as any)
+    renderer.render(gameStore.physicsWorld)
   }
   animationFrameId = requestAnimationFrame(gameLoop)
 }
 
-// === 输入处理 ===
+// === 阶段切换 ===
 
-function onMouseDown(e: MouseEvent) {
+/** 进入新阶段时重置输入，并准备默认瞄准方向 / 白球摆放位置 */
+function enterPhase() {
+  cueController.reset()
+  activeDrag = null
+  powering.value = false
+  powerPercent.value = 0
+  renderer.placementPreview = null
+
+  const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue)
+  if (!cueBall) return
+
+  if (isAimPhase.value && cueBall.active) {
+    cueController.setCueBallPosition(cueBall.position)
+    aimAtNearestTarget(cueBall.position)
+  } else if (phase.value === 'ball_in_hand' && isMyTurnInOnline.value) {
+    const start = cueBall.active ? cueBall.position : new Vector2(TABLE_WIDTH * 0.25, TABLE_HEIGHT / 2)
+    setPlacementPreview(start)
+  }
+}
+
+/** 默认瞄准离白球最近的可击打目标球 */
+function aimAtNearestTarget(from: Vector2) {
+  const targets = gameStore.ruleEngine.getTargetBalls(gameStore.physicsWorld.balls, gameStore.currentPlayer())
+  let nearest: Vector2 | null = null
+  for (const ball of targets) {
+    if (!nearest || ball.position.distFrom(from) < nearest.distFrom(from)) nearest = ball.position
+  }
+  if (nearest) cueController.aimAt(nearest)
+}
+
+watch([phase, currentPlayerIndex], () => {
+  if (canvasReady) enterPhase()
+})
+
+// 本地双人：换手时显示遮罩（开局和重开不显示）
+watch(currentPlayerIndex, (nextPlayer, previousPlayer) => {
+  if (isOnlineMode.value || nextPlayer === previousPlayer) return
+  if (turnCount.value === 0 || phase.value === 'game_over') return
+  showTurnHandoff.value = true
+})
+
+// === 自由球摆放 ===
+
+function setPlacementPreview(position: Vector2) {
+  // 限制在台面内，避免白球被拖出桌外
+  const clamped = new Vector2(
+    Math.min(Math.max(position.x, BALL_RADIUS), TABLE_WIDTH - BALL_RADIUS),
+    Math.min(Math.max(position.y, BALL_RADIUS), TABLE_HEIGHT - BALL_RADIUS),
+  )
+  const valid = gameStore.isValidCueBallPosition(clamped)
+  renderer.placementPreview = { position: clamped, valid }
+  placementValid.value = valid
+}
+
+function confirmPlacement() {
+  const preview = renderer.placementPreview
+  if (!preview?.valid) return
+  gameStore.placeCueBall(preview.position)
+}
+
+// === 画布输入 ===
+
+function canvasPoint(clientX: number, clientY: number): Vector2 {
+  const rect = canvasEl!.getBoundingClientRect()
+  return new Vector2(clientX - rect.left, clientY - rect.top)
+}
+
+function onCanvasMouseDown(e: MouseEvent) {
   void audioEngine.unlock()
-  if (isOnlineMode.value && !gameStore.isMyTurn()) return
-  const rect = (e.target as HTMLElement).getBoundingClientRect()
-  handleInputStart(new Vector2(e.clientX - rect.left, e.clientY - rect.top))
+  handlePointerStart(canvasPoint(e.clientX, e.clientY))
+}
+
+function onCanvasTouchStart(e: TouchEvent) {
+  void audioEngine.unlock()
+  e.preventDefault()
+  const touch = e.touches[0]
+  handlePointerStart(canvasPoint(touch.clientX, touch.clientY))
+}
+
+function handlePointerStart(pixelPos: Vector2) {
+  if (!canAct.value || activeDrag) return
+  dragLastPixel = pixelPos
+
+  if (phase.value === 'ball_in_hand') {
+    activeDrag = 'place'
+  } else if (isAimPhase.value) {
+    activeDrag = 'table'
+    cueController.startTableDrag(renderer.toGame(pixelPos), pixelPos)
+  }
+}
+
+// === 微调条 / 力度条输入 ===
+
+function eventClientPoint(e: TouchEvent | MouseEvent): Vector2 {
+  const point = 'touches' in e ? (e.touches[0] ?? e.changedTouches[0]) : e
+  return new Vector2(point.clientX, point.clientY)
+}
+
+function onFineTuneStart(e: TouchEvent | MouseEvent) {
+  void audioEngine.unlock()
+  if (!showAimControls.value || activeDrag) return
+  activeDrag = 'fineTune'
+  dragLastPixel = eventClientPoint(e)
+}
+
+function onPowerStart(e: TouchEvent | MouseEvent) {
+  void audioEngine.unlock()
+  if (!showAimControls.value || activeDrag) return
+  const track = powerTrack.value
+  const el = (track && '$el' in track ? track.$el : track) as HTMLElement | null
+  powerTrackRect = el?.getBoundingClientRect() ?? null
+  activeDrag = 'power'
+  dragLastPixel = eventClientPoint(e)
+  cueController.startPower()
+  powering.value = true
+  powerPercent.value = 0
+}
+
+// === 统一的拖动处理（触摸在 document 上监听，鼠标在 window 上监听） ===
+
+function handleDragMove(client: Vector2, canvasPixel: Vector2 | null) {
+  switch (activeDrag) {
+    case 'table':
+      if (canvasPixel) cueController.moveTableDrag(renderer.toGame(canvasPixel), canvasPixel)
+      break
+    case 'place': {
+      if (!canvasPixel || !renderer.placementPreview) break
+      // 相对拖动：手指不必压在白球上，避免遮挡
+      const delta = renderer.toGame(canvasPixel).subtract(renderer.toGame(dragLastPixel))
+      setPlacementPreview(renderer.placementPreview.position.add(delta))
+      dragLastPixel = canvasPixel
+      break
+    }
+    case 'fineTune': {
+      const dx = client.x - dragLastPixel.x
+      cueController.fineTune(dx)
+      fineTuneOffset.value += dx
+      dragLastPixel = client
+      break
+    }
+    case 'power': {
+      // 从按下位置向右拖，拖满力度条宽度 = 满力；拖回起点 = 取消
+      const width = Math.max(powerTrackRect?.width ?? 200, 1)
+      cueController.setPower((client.x - dragLastPixel.x) / (width * 0.9))
+      powerPercent.value = cueController.power * 100
+      break
+    }
+  }
+}
+
+function handleDragEnd() {
+  const drag = activeDrag
+  activeDrag = null
+  if (drag === 'table') cueController.endTableDrag()
+  if (drag === 'power') {
+    cueController.releasePower()
+    powering.value = false
+    powerPercent.value = 0
+  }
 }
 
 function onMouseMove(e: MouseEvent) {
-  if (isOnlineMode.value && !gameStore.isMyTurn()) return
-  const rect = (e.target as HTMLElement).getBoundingClientRect()
-  handleInputMove(new Vector2(e.clientX - rect.left, e.clientY - rect.top))
+  if (!activeDrag) return
+  const client = new Vector2(e.clientX, e.clientY)
+  handleDragMove(client, canvasEl ? canvasPoint(e.clientX, e.clientY) : null)
 }
 
 function onMouseUp() {
-  if (isOnlineMode.value && !gameStore.isMyTurn()) return
-  handleInputEnd()
+  if (activeDrag) handleDragEnd()
 }
 
-function onTouchStart(e: TouchEvent) {
-  void audioEngine.unlock()
-  if (isOnlineMode.value && !gameStore.isMyTurn()) return
+function onDocumentTouchMove(e: TouchEvent) {
+  if (!activeDrag) return
   e.preventDefault()
-  const rect = (e.target as HTMLElement).getBoundingClientRect()
   const touch = e.touches[0]
-  handleInputStart(new Vector2(touch.clientX - rect.left, touch.clientY - rect.top))
+  handleDragMove(new Vector2(touch.clientX, touch.clientY), canvasEl ? canvasPoint(touch.clientX, touch.clientY) : null)
 }
 
-function onTouchMove(e: TouchEvent) {
-  if (isOnlineMode.value && !gameStore.isMyTurn()) return
-  e.preventDefault()
-  const rect = (e.target as HTMLElement).getBoundingClientRect()
-  const touch = e.touches[0]
-  handleInputMove(new Vector2(touch.clientX - rect.left, touch.clientY - rect.top))
+function onDocumentTouchEnd(e: TouchEvent) {
+  if (activeDrag && e.touches.length === 0) handleDragEnd()
 }
 
-function onTouchEnd() {
-  if (isOnlineMode.value && !gameStore.isMyTurn()) return
-  handleInputEnd()
-}
-
-function handleInputStart(pixelPos: Vector2) {
-  if (showTurnHandoff.value) return
-  const gamePos = renderer.toGame(pixelPos)
-  const currentPhase = gameStore.phase
-
-  if (currentPhase === 'ball_in_hand') {
-    gameStore.placeCueBall(gamePos)
-  } else if (currentPhase === 'aiming' || currentPhase === 'break_shot') {
-    const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
-    if (cueBall) {
-      cueController.setCueBallPosition(cueBall.position)
-      cueController.startAim(gamePos, pixelPos)
-    }
-  }
-}
-
-function handleInputMove(pixelPos: Vector2) {
-  if (showTurnHandoff.value) return
-  const currentPhase = gameStore.phase
-  if (currentPhase !== 'aiming' && currentPhase !== 'break_shot') return
-
-  const gamePos = renderer.toGame(pixelPos)
-
-  if (cueController.isAiming && !cueController.isPowering) {
-    const diff = gamePos.subtract(cueController.cueBallPosition)
-    const dot = diff.normalized.dot(Vector2.fromAngle(cueController.aimAngle + Math.PI))
-    if (dot > 0.5) {
-      cueController.startPower()
-    }
-  }
-
-  cueController.moveAim(gamePos, pixelPos)
-}
-
-function handleInputEnd() {
-  if (showTurnHandoff.value) return
-  if (cueController.isAiming || cueController.isPowering) {
-    cueController.endShot()
-  }
-}
+document.addEventListener('touchmove', onDocumentTouchMove, { passive: false })
+document.addEventListener('touchend', onDocumentTouchEnd)
+document.addEventListener('touchcancel', onDocumentTouchEnd)
+onUnmounted(() => {
+  document.removeEventListener('touchmove', onDocumentTouchMove)
+  document.removeEventListener('touchend', onDocumentTouchEnd)
+  document.removeEventListener('touchcancel', onDocumentTouchEnd)
+})
 
 function confirmTurnHandoff() {
   showTurnHandoff.value = false
 }
-
-watch(currentPlayerIndex, (nextPlayer, previousPlayer) => {
-  if (isOnlineMode.value || !handoffReady.value || nextPlayer === previousPlayer) return
-  showTurnHandoff.value = true
-})
 
 function restart() {
   showTurnHandoff.value = false
@@ -611,38 +704,79 @@ function goHome() {
   padding: 6rpx 20rpx calc(10rpx + env(safe-area-inset-bottom));
 }
 
-/* 蓄力条 */
-.power-bar-container {
+/* 瞄准操作区：微调条 + 力度条 */
+.aim-controls {
   display: flex;
   align-items: center;
-  padding: 4rpx 0;
-  height: 36rpx;
+  gap: 16rpx;
+  height: 72rpx;
 }
 
-.power-bar-container.placeholder {
+.aim-controls.placeholder {
   justify-content: center;
 }
 
-.power-bar-bg {
-  flex: 1;
-  height: 14rpx;
-  background-color: #333355;
-  border-radius: 7rpx;
+.fine-tune,
+.power-track {
+  position: relative;
+  height: 64rpx;
+  border-radius: 12rpx;
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #262645;
+  border: 1rpx solid rgba(100, 100, 255, 0.3);
+  touch-action: none;
+  user-select: none;
+}
+
+.fine-tune {
+  flex: 2;
+}
+
+.power-track {
+  flex: 3;
+}
+
+.fine-tune-ticks {
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 1px, transparent 1px 10px);
 }
 
 .power-bar-fill {
-  height: 100%;
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
   background: linear-gradient(90deg, #4caf50, #ff9800, #f44336);
-  border-radius: 7rpx;
-  transition: width 0.05s;
 }
 
-.power-text {
-  margin-left: 12rpx;
-  font-size: 20rpx;
+.control-label {
+  position: relative;
+  font-size: 22rpx;
   color: #e0e0ff;
-  min-width: 50rpx;
+  pointer-events: none;
+}
+
+.placement-hint {
+  flex: 1;
+  font-size: 22rpx;
+  color: #ffd93d;
+}
+
+.confirm-btn {
+  padding: 14rpx 36rpx;
+  border-radius: 12rpx;
+  background-color: #4caf50;
+  color: #fff;
+  font-size: 24rpx;
+}
+
+.confirm-btn.disabled {
+  background-color: #444466;
+  color: #888;
 }
 
 .power-placeholder {

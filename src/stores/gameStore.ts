@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, markRaw } from 'vue'
 import { Ball, BallState } from '../engine/physics/Ball'
 import { Vector2 } from '../engine/physics/Vector2'
 import { PhysicsWorld } from '../engine/physics/PhysicsWorld'
@@ -83,8 +83,9 @@ function computeChecksum(balls: Ball[]): string {
 
 export const useGameStore = defineStore('game', () => {
   // === 核心引擎 ===
-  const physicsWorld = new PhysicsWorld()
-  const ruleEngine = new RuleEngine()
+  // markRaw：引擎对象每帧高频读写，不需要 Vue 响应式代理
+  const physicsWorld = markRaw(new PhysicsWorld())
+  const ruleEngine = markRaw(new RuleEngine())
 
   // === 游戏状态 ===
   const phase = ref<GP>(GP.IDLE)
@@ -504,15 +505,19 @@ export const useGameStore = defineStore('game', () => {
     return success
   }
 
+  /** 白球能否放在该位置（台面内、不与其他球重叠、不在袋口） */
+  function isValidCueBallPosition(position: Vector2): boolean {
+    const cueBall = physicsWorld.balls.find(b => b.isCue)
+    return physicsWorld.isInsideTable(position)
+      && !physicsWorld.isPositionOverlap(position, cueBall)
+      && !physicsWorld.isInsideAnyPocket(position)
+  }
+
   /** 本地放置白球 */
   function localPlaceCueBall(position: Vector2): boolean {
     const cueBall = physicsWorld.balls.find(b => b.isCue)
     if (!cueBall) return false
-
-    // 检查位置是否合法
-    if (!physicsWorld.isInsideTable(position)) return false
-    if (physicsWorld.isPositionOverlap(position, cueBall)) return false
-    if (physicsWorld.isInsideAnyPocket(position)) return false
+    if (!isValidCueBallPosition(position)) return false
 
     cueBall.place(position)
     foulMessage.value = null
@@ -531,7 +536,7 @@ export const useGameStore = defineStore('game', () => {
     // 引擎
     physicsWorld, ruleEngine,
     // 方法
-    initGame, shoot, update, placeCueBall,
+    initGame, shoot, update, placeCueBall, isValidCueBallPosition,
     currentPlayer, otherPlayer,
     firstHitBallThisTurn,
     // 在线模式方法

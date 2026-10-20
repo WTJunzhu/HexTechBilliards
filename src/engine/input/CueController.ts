@@ -2,115 +2,125 @@ import { Vector2 } from '../physics/Vector2'
 import { MAX_SHOT_POWER } from '../physics/TableSpec'
 
 /**
- * 输入适配器 - 统一触摸和鼠标事件
- */
-export interface InputEvent {
-  type: 'start' | 'move' | 'end'
-  position: Vector2  // Canvas像素坐标
-}
-
-export type InputHandler = (event: InputEvent) => void
-
-/**
- * 球杆控制器 - 管理瞄准和击球
+ * 球杆控制器 - 管理瞄准、蓄力和击球
+ *
+ * 操作方式（参考常见手机台球游戏）：
+ * - 桌面：点击某处 → 瞄准该点；按住拖动 → 绕白球旋转瞄准方向
+ * - 微调条：左右拖动做精细角度调整
+ * - 力度条：拖动蓄力，松手出杆；拖回起点（力度低于阈值）松手即取消
  */
 export class CueController {
-  /** 是否正在瞄准 */
-  public isAiming = false
+  /** 瞄准角度（弧度） */
+  public aimAngle: number = 0
+
+  /** 当前力度 (0-1) */
+  public power: number = 0
 
   /** 是否正在蓄力 */
   public isPowering = false
 
-  /** 瞄准角度 */
-  public aimAngle: number = 0
-
-  /** 击球力度 (0-1) */
-  public power: number = 0
-
   /** 白球位置 */
   public cueBallPosition: Vector2 = Vector2.zero
 
-  /** 触摸起始位置（Canvas像素，用于计算蓄力拖动距离） */
-  private touchStartPos: Vector2 | null = null
+  /** 力度低于此值松手视为取消 */
+  public static readonly MIN_SHOT_POWER = 0.05
 
-  /** 拖动多少像素达到满力 */
-  private static readonly FULL_POWER_DRAG_PX = 150
+  /** 微调条：每像素旋转的弧度（约 0.1°） */
+  private static readonly FINE_TUNE_RAD_PER_PX = 0.0018
 
-  /** 瞄准起始角度 */
-  private aimStartAngle: number = 0
+  /** 移动超过此像素数视为拖动，否则视为点击 */
+  private static readonly TAP_SLOP_PX = 6
 
-  /** 蓄力起始距离 */
-  private powerStartDist: number = 0
+  /** 桌面拖动状态 */
+  private tableDrag: { startPixel: Vector2; lastGame: Vector2; dragging: boolean } | null = null
 
   /** 回调：击球 */
   public onShoot: ((power: number, angle: number) => void) | null = null
-
-  /** 回调：更新瞄准线 */
-  public onUpdateAim: ((angle: number) => void) | null = null
-
-  /** 回调：更新力度 */
-  public onUpdatePower: ((power: number) => void) | null = null
 
   setCueBallPosition(pos: Vector2): void {
     this.cueBallPosition = pos
   }
 
-  /**
-   * 开始瞄准
-   */
-  startAim(touchPos: Vector2, pixelPos: Vector2): void {
-    this.isAiming = true
-    this.isPowering = false
-    this.touchStartPos = pixelPos
-    this.power = 0
-
-    // 计算初始瞄准角度（白球 → 触摸点反方向）
-    const diff = this.cueBallPosition.subtract(touchPos)
-    this.aimAngle = diff.angle
-    this.aimStartAngle = this.aimAngle
+  /** 瞄准某个点 */
+  aimAt(target: Vector2): void {
+    const diff = target.subtract(this.cueBallPosition)
+    if (diff.length > 0) this.aimAngle = diff.angle
   }
 
-  /**
-   * 瞄准中移动
-   */
-  moveAim(touchPos: Vector2, pixelPos: Vector2): void {
-    if (!this.touchStartPos) return
+  /** 旋转瞄准方向 */
+  rotate(deltaAngle: number): void {
+    this.aimAngle += deltaAngle
+  }
 
-    if (this.isPowering) {
-      // 蓄力模式：根据屏幕上的拖动距离调整力度
-      const dist = pixelPos.subtract(this.touchStartPos).length
-      this.power = Math.min(dist / CueController.FULL_POWER_DRAG_PX, 1)
-      this.onUpdatePower?.(this.power)
-    } else if (this.isAiming) {
-      // 瞄准模式：根据触摸位置计算角度
-      const diff = this.cueBallPosition.subtract(touchPos)
-      this.aimAngle = diff.angle
-      this.onUpdateAim?.(this.aimAngle)
+  // ==================== 桌面瞄准手势 ====================
+
+  startTableDrag(gamePos: Vector2, pixelPos: Vector2): void {
+    this.tableDrag = { startPixel: pixelPos, lastGame: gamePos, dragging: false }
+  }
+
+  moveTableDrag(gamePos: Vector2, pixelPos: Vector2): void {
+    const drag = this.tableDrag
+    if (!drag) return
+    if (!drag.dragging && pixelPos.distFrom(drag.startPixel) > CueController.TAP_SLOP_PX) {
+      drag.dragging = true
     }
+    if (drag.dragging) {
+      // 手指绕白球扫过的角度 = 球杆旋转的角度，手指不必压在目标上
+      const prev = drag.lastGame.subtract(this.cueBallPosition)
+      const curr = gamePos.subtract(this.cueBallPosition)
+      if (prev.length > 0.5 && curr.length > 0.5) {
+        let delta = curr.angle - prev.angle
+        if (delta > Math.PI) delta -= Math.PI * 2
+        if (delta < -Math.PI) delta += Math.PI * 2
+        this.rotate(delta)
+      }
+    }
+    drag.lastGame = gamePos
   }
 
-  /**
-   * 切换到蓄力模式（手指远离白球方向时）
-   */
+  endTableDrag(): void {
+    const drag = this.tableDrag
+    this.tableDrag = null
+    if (drag && !drag.dragging) this.aimAt(drag.lastGame)
+  }
+
+  // ==================== 微调 ====================
+
+  fineTune(deltaPixels: number): void {
+    this.rotate(deltaPixels * CueController.FINE_TUNE_RAD_PER_PX)
+  }
+
+  // ==================== 蓄力 ====================
+
   startPower(): void {
     this.isPowering = true
-    this.isAiming = false
+    this.power = 0
   }
 
-  /**
-   * 释放/击球
-   */
-  endShot(): void {
-    if (this.power > 0.05) {
-      const actualPower = this.power * MAX_SHOT_POWER
-      this.onShoot?.(actualPower, this.aimAngle)
-    }
+  setPower(power: number): void {
+    if (!this.isPowering) return
+    this.power = Math.max(0, Math.min(power, 1))
+  }
 
-    // 重置状态
-    this.isAiming = false
+  /** 松手：力度足够则出杆，否则取消。返回是否出杆 */
+  releasePower(): boolean {
+    const shot = this.isPowering && this.power >= CueController.MIN_SHOT_POWER
+    if (shot) {
+      this.onShoot?.(this.power * MAX_SHOT_POWER, this.aimAngle)
+    }
+    this.cancelPower()
+    return shot
+  }
+
+  cancelPower(): void {
     this.isPowering = false
-    this.touchStartPos = null
     this.power = 0
+  }
+
+  /** 中断所有进行中的操作（换手、阶段切换时调用） */
+  reset(): void {
+    this.tableDrag = null
+    this.cancelPower()
   }
 
   /**

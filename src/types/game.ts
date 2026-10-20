@@ -5,7 +5,6 @@
 // Re-export types with proper type-only exports
 export type { ForceField, BaseForceField, GravityWell, AccelerationZone, TableTilt } from '../engine/physics/ForceField'
 export type { GamePhase, BallGroup, Player, TurnResult, GameStateData } from '../engine/game/GameState'
-export type { InputEvent, InputHandler } from '../engine/input/CueController'
 
 // Re-export value exports (classes and constants)
 export { Vector2 } from '../engine/physics/Vector2'

@@ -18,8 +18,6 @@ import {
 import type { PhysicsWorld } from '../physics/PhysicsWorld'
 import type { ForceField } from '../physics/ForceField'
 
-export type SpinType = 'center' | 'top' | 'bottom' | 'left' | 'right' | 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
-
 export class CanvasRenderer {
   private ctx: CanvasRenderingContext2D | null = null
   private canvasWidth: number = 0
@@ -44,8 +42,8 @@ export class CanvasRenderer {
     shootProgress: 0,
   }
 
-  /** 击球部位 */
-  public spinType: SpinType = 'center'
+  /** 自由球摆放预览（存在时白球画在预览位置） */
+  public placementPreview: { position: Vector2; valid: boolean } | null = null
 
   /**
    * 使用标准 CanvasRenderingContext2D 初始化
@@ -123,9 +121,14 @@ export class CanvasRenderer {
 
     // 绘制球
     for (const ball of world.balls) {
-      if (ball.active) {
+      if (ball.active && !(ball.isCue && this.placementPreview)) {
         this.drawBall(ctx, ball)
       }
+    }
+
+    // 自由球摆放预览
+    if (this.placementPreview) {
+      this.drawPlacementPreview(ctx, world)
     }
 
     if (this._firstFrame) {
@@ -481,6 +484,32 @@ export class CanvasRenderer {
     ctx.fill()
 
     ctx.restore()
+  }
+
+  // ==================== 自由球预览 ====================
+
+  private drawPlacementPreview(ctx: CanvasRenderingContext2D, world: PhysicsWorld): void {
+    const preview = this.placementPreview!
+    const cueBall = world.balls.find(ball => ball.isCue)
+    if (!cueBall) return
+
+    ctx.save()
+    ctx.globalAlpha = preview.valid ? 1 : 0.55
+    const originalPosition = cueBall.position
+    cueBall.position = preview.position
+    this.drawBall(ctx, cueBall)
+    cueBall.position = originalPosition
+    ctx.restore()
+
+    // 合法：绿色描边；不合法：红色描边
+    const pixel = this.toPixel(preview.position)
+    ctx.beginPath()
+    ctx.arc(pixel.x, pixel.y, BALL_RADIUS * this.scale * 1.35, 0, Math.PI * 2)
+    ctx.strokeStyle = preview.valid ? 'rgba(107,203,119,0.95)' : 'rgba(255,107,107,0.95)'
+    ctx.lineWidth = 2
+    ctx.setLineDash([4, 3])
+    ctx.stroke()
+    ctx.setLineDash([])
   }
 
   // ==================== 力场特效绘制 ====================
