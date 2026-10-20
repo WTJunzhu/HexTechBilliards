@@ -23,7 +23,7 @@
           等待对手击球...
         </text>
         <text class="turn-text" v-else>
-          {{ players[currentPlayerIndex].name }} 的回合
+          {{ players[currentPlayerIndex].name }} 的回合{{ turnSuffix }}
         </text>
         <text class="turn-count">回合 {{ turnCount }}</text>
       </view>
@@ -147,7 +147,11 @@ import { CanvasRenderer } from '../../engine/renderer/CanvasRenderer'
 import { CueController } from '../../engine/input/CueController'
 import { AudioEngine } from '../../engine/audio/AudioEngine'
 import { Vector2 } from '../../engine/physics/Vector2'
-import { TABLE_WIDTH, TABLE_HEIGHT, BALL_RADIUS } from '../../engine/physics/TableSpec'
+import { TABLE_WIDTH, TABLE_HEIGHT, BALL_RADIUS, POCKETS, BREAK_LINE_X } from '../../engine/physics/TableSpec'
+import { POCKET_NAMES } from '../../engine/game/GameState'
+
+/** 点击袋口中心多远以内算选中该袋口（游戏单位） */
+const POCKET_TAP_RADIUS = 5
 
 const gameStore = useGameStore()
 const renderer = new CanvasRenderer()
@@ -172,14 +176,14 @@ let logicalWidth = 0
 let logicalHeight = 0
 
 /** 当前进行中的拖动操作（桌面瞄准 / 摆放白球 / 微调 / 蓄力 / 选击球点） */
-let activeDrag: 'table' | 'place' | 'fineTune' | 'power' | 'spin' | null = null
+let activeDrag: 'table' | 'place' | 'breakCue' | 'fineTune' | 'power' | 'spin' | null = null
 let spinPickerRect: DOMRect | null = null
 let dragLastPixel = Vector2.zero
 let powerTrackRect: DOMRect | null = null
 
 // 从store访问（storeToRefs 保持响应式）
 const {
-  phase, players, currentPlayerIndex, turnCount, winner, winReason, foulMessage,
+  phase, players, currentPlayerIndex, turnCount, winner, winReason, foulMessage, calledPocket,
   isOnlineMode, myPlayerIndex, networkStatus,
   opponentDisconnected, rematchRequested, opponentRequestedRematch,
 } = storeToRefs(gameStore)
@@ -197,7 +201,15 @@ const isAimPhase = computed(() => phase.value === 'aiming' || phase.value === 'b
 const showAimControls = computed(() => canAct.value && isAimPhase.value)
 const showPlacementControls = computed(() => canAct.value && phase.value === 'ball_in_hand')
 
+/** 本组已清完、需要指定8号球袋口（依赖 turnCount/phase 刷新） */
+const mustCallPocket = computed(() => {
+  void turnCount.value
+  void phase.value
+  return isAimPhase.value && gameStore.needsCalledPocket()
+})
+
 const powerLabel = computed(() => {
+  if (mustCallPocket.value && calledPocket.value === null) return '先点击袋口指定8号球'
   if (!powering.value) return '拖动蓄力 →'
   if (powerPercent.value < CueController.MIN_SHOT_POWER * 100) return '松手取消'
   return `力度 ${Math.round(powerPercent.value)}%`
@@ -216,6 +228,15 @@ const networkStatusText = computed(() => {
     case 'reconnecting': return '重连中...'
     default: return ''
   }
+})
+
+/** 回合标题后缀：开球提示 / 指袋状态 */
+const turnSuffix = computed(() => {
+  if (phase.value === 'break_shot') return ' · 开球（可拖动白球）'
+  if (mustCallPocket.value) {
+    return calledPocket.value === null ? ' · 点击袋口指定8号球' : ` · 8号指定${POCKET_NAMES[calledPocket.value]}`
+  }
+  return ''
 })
 
 /** 阶段提示文字 */
@@ -379,6 +400,10 @@ function gameLoop(now: number = performance.now()) {
     // 轮到我操作时高亮可击打的目标球
     const showTargets = isMyTurnInOnline.value && !showTurnHandoff.value
       && (isAimPhase.value || phase.value === 'ball_in_hand')
+    renderer.pocketCall = showTargets && mustCallPocket.value
+      ? { called: calledPocket.value }
+      : null
+    renderer.breakArea = showTargets && phase.value === 'break_shot'
     renderer.highlightBalls = showTargets
       ? new Set(gameStore.ruleEngine.getTargetBalls(gameStore.physicsWorld.balls, gameStore.currentPlayer()).map(b => b.number))
       : new Set()
@@ -421,7 +446,7 @@ function enterPhase() {
     cueController.setCueBallPosition(cueBall.position)
     aimAtNearestTarget(cueBall.position)
   } else if (phase.value === 'ball_in_hand' && isMyTurnInOnline.value) {
-    const start = cueBall.active ? cueBall.position : new Vector2(TABLE_WIDTH * 0.25, TABLE_HEIGHT / 2)
+    const start = cueBall.active ? cueBall.position : new Vector2(BREAK_LINE_X, TABLE_HEIGHT / 2)
     setPlacementPreview(start)
   }
 }
@@ -491,7 +516,29 @@ function handlePointerStart(pixelPos: Vector2) {
 
   if (phase.value === 'ball_in_hand') {
     activeDrag = 'place'
-  } else if (isAimPhase.value) {
+    return
+  }
+  if (!isAimPhase.value) return
+  const gamePos = renderer.toGame(pixelPos)
+
+  // 打8号球：点击袋口附近即指定袋口
+  if (mustCallPocket.value) {
+    const pocket = POCKETS.findIndex(p => p.holeCenter.distFrom(gamePos) < POCKET_TAP_RADIUS)
+    if (pocket >= 0) {
+      gameStore.callPocket(pocket)
+      return
+    }
+  }
+
+  // 开球前：按住白球可在开球线后拖动摆放
+  const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue && b.active)
+  if (phase.value === 'break_shot' && cueBall && cueBall.position.distFrom(gamePos) < BALL_RADIUS * 2.5) {
+    activeDrag = 'breakCue'
+    setPlacementPreview(cueBall.position)
+    return
+  }
+
+  {
     activeDrag = 'table'
     cueController.startTableDrag(renderer.toGame(pixelPos), pixelPos)
   }
@@ -535,6 +582,7 @@ function updateSpin(client: Vector2) {
 function onPowerStart(e: TouchEvent | MouseEvent) {
   void audioEngine.unlock()
   if (!showAimControls.value || activeDrag) return
+  if (mustCallPocket.value && calledPocket.value === null) return
   const track = powerTrack.value
   const el = (track && '$el' in track ? track.$el : track) as HTMLElement | null
   powerTrackRect = el?.getBoundingClientRect() ?? null
@@ -552,7 +600,8 @@ function handleDragMove(client: Vector2, canvasPixel: Vector2 | null) {
     case 'table':
       if (canvasPixel) cueController.moveTableDrag(renderer.toGame(canvasPixel), canvasPixel)
       break
-    case 'place': {
+    case 'place':
+    case 'breakCue': {
       if (!canvasPixel || !renderer.placementPreview) break
       // 相对拖动：手指不必压在白球上，避免遮挡
       const delta = renderer.toGame(canvasPixel).subtract(renderer.toGame(dragLastPixel))
@@ -584,6 +633,12 @@ function handleDragEnd() {
   const drag = activeDrag
   activeDrag = null
   if (drag === 'table') cueController.endTableDrag()
+  if (drag === 'breakCue') {
+    // 松手时位置合法就放下，否则白球留在原位
+    const preview = renderer.placementPreview
+    if (preview?.valid) gameStore.placeCueBall(preview.position)
+    renderer.placementPreview = null
+  }
   if (drag === 'power') {
     cueController.releasePower()
     powering.value = false

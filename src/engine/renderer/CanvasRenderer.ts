@@ -12,7 +12,7 @@ import { Vector2 } from '../physics/Vector2'
 import type { Ball } from '../physics/Ball'
 import {
   TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
-  POCKETS, CUSHION_SEGMENTS,
+  POCKETS, CUSHION_SEGMENTS, BREAK_LINE_X,
   BALL_RADIUS, BALL_DIAMETER, RENDER_SCALE, updateRenderScale,
 } from '../physics/TableSpec'
 import type { PhysicsWorld } from '../physics/PhysicsWorld'
@@ -50,6 +50,12 @@ export class CanvasRenderer {
 
   /** 自由球摆放预览（存在时白球画在预览位置） */
   public placementPreview: { position: Vector2; valid: boolean } | null = null
+
+  /** 指袋模式：所有袋口显示可选提示，已指定的袋口高亮；null 表示不需要指袋 */
+  public pocketCall: { called: number | null } | null = null
+
+  /** 开球前高亮开球区（开球线左侧） */
+  public breakArea = false
 
   /** 当前玩家可击打的目标球号，绘制时加光圈提示 */
   public highlightBalls: Set<number> = new Set()
@@ -134,6 +140,9 @@ export class CanvasRenderer {
 
     // 绘制球桌
     this.drawTable(ctx)
+
+    if (this.breakArea) this.drawBreakArea(ctx)
+    if (this.pocketCall) this.drawPocketCall(ctx, this.pocketCall.called)
 
     // 绘制力场特效（海克斯效果视觉）
     this.drawForceFields(ctx)
@@ -246,7 +255,7 @@ export class CanvasRenderer {
     ctx.lineCap = 'butt'
 
     // 开球线：球桌横放，位于左侧 1/4 处的竖线（白球开球位置）
-    const breakLineX = tableX + tableW * 0.25
+    const breakLineX = this.toPixel(new Vector2(BREAK_LINE_X, 0)).x
     ctx.beginPath()
     ctx.moveTo(breakLineX, tableY)
     ctx.lineTo(breakLineX, tableY + tableH)
@@ -345,6 +354,41 @@ export class CanvasRenderer {
     ctx.arc(pos.x + shine.x, pos.y + shine.y, radius * 0.3, 0, Math.PI * 2)
     ctx.fillStyle = 'rgba(255,255,255,0.35)'
     ctx.fill()
+  }
+
+  /** 开球区：开球线左侧淡色覆盖 */
+  private drawBreakArea(ctx: CanvasRenderingContext2D): void {
+    const topLeft = this.toPixel(new Vector2(0, 0))
+    const bottomRight = this.toPixel(new Vector2(BREAK_LINE_X, TABLE_HEIGHT))
+    // 裁剪到台面轮廓内，避免盖住角袋
+    ctx.save()
+    const outline = this.feltOutline()
+    ctx.beginPath()
+    outline.forEach((point, i) => (i === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)))
+    ctx.closePath()
+    ctx.clip()
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
+    ctx.fillRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y)
+    ctx.restore()
+  }
+
+  /** 指袋：未指定时所有袋口画虚线圈提示可点；已指定的袋口画实心高亮圈 */
+  private drawPocketCall(ctx: CanvasRenderingContext2D, called: number | null): void {
+    POCKETS.forEach((pocket, i) => {
+      if (called !== null && i !== called) return
+      const center = this.toPixel(pocket.holeCenter)
+      ctx.beginPath()
+      ctx.arc(center.x, center.y, (pocket.holeRadius + 0.6) * this.scale, 0, Math.PI * 2)
+      ctx.lineWidth = Math.max(2, this.scale * 0.25)
+      if (called === null) {
+        ctx.strokeStyle = 'rgba(255, 217, 61, 0.7)'
+        ctx.setLineDash([6, 5])
+      } else {
+        ctx.strokeStyle = 'rgba(255, 217, 61, 1)'
+      }
+      ctx.stroke()
+      ctx.setLineDash([])
+    })
   }
 
   /** 屏幕上的偏移方向 → 布局坐标中的偏移（旋转时 屏幕 (dx, dy) 对应 布局 (-dy, dx)） */

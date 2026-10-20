@@ -32,6 +32,25 @@ export interface TurnResult {
 }
 
 /**
+ * 一杆的物理过程信息（由主循环收集，供规则判定）
+ */
+export interface ShotInfo {
+  /** 是否开球 */
+  isBreakShot: boolean
+  /** 白球首次碰到目标球之后，是否有任意球碰库 */
+  railAfterContact: boolean
+  /** 碰过库的目标球数量（开球合法性判定） */
+  objectBallsRailed: number
+  /** 8号球落入的袋口索引，未进袋为 null */
+  eightBallPocket: number | null
+  /** 击球前指定的8号球袋口，未指定为 null */
+  calledPocket: number | null
+}
+
+/** 袋口名称，与 TableSpec.POCKETS 顺序一致 */
+export const POCKET_NAMES = ['左上角袋', '上中袋', '右上角袋', '左下角袋', '下中袋', '右下角袋']
+
+/**
  * 球组类型
  */
 export enum BallGroup {

@@ -4,8 +4,8 @@ import { Ball, BallState } from '../engine/physics/Ball'
 import { Vector2 } from '../engine/physics/Vector2'
 import { PhysicsWorld } from '../engine/physics/PhysicsWorld'
 import { RuleEngine } from '../engine/game/RuleEngine'
-import { TABLE_WIDTH, TABLE_HEIGHT, PHYSICS_DT } from '../engine/physics/TableSpec'
-import { GamePhase as GP, BallGroup as BG, type Player as PlayerType, type TurnResult } from '../engine/game/GameState'
+import { TABLE_WIDTH, TABLE_HEIGHT, PHYSICS_DT, BREAK_LINE_X } from '../engine/physics/TableSpec'
+import { GamePhase as GP, BallGroup as BG, type Player as PlayerType, type TurnResult, type ShotInfo } from '../engine/game/GameState'
 import { getNetworkManager } from '../network/NetworkManager'
 import type { GameMessage, GameSnapshotMessage, NetworkEvent } from '../network/types'
 
@@ -24,8 +24,8 @@ const RACK_JITTER = 0.01
 function createInitialBalls(): Ball[] {
   const balls: Ball[] = []
 
-  // 白球 - 开球区（左侧1/4处）
-  balls.push(new Ball(0, new Vector2(TABLE_WIDTH * 0.25, TABLE_HEIGHT * 0.5)))
+  // 白球 - 开球线上（开球前可在开球线后自由摆放）
+  balls.push(new Ball(0, new Vector2(BREAK_LINE_X, TABLE_HEIGHT * 0.5)))
 
   // 三角形排列 - 顶球在置球点（球桌 3/4 处）
   const startX = TABLE_WIDTH * 0.75
@@ -112,6 +112,14 @@ export const useGameStore = defineStore('game', () => {
   const isBreakShot = ref(true)
   const firstHitBallThisTurn = ref<number | null>(null)
   const pocketedThisTurn = ref<Ball[]>([])
+  /** 打8号球时指定的袋口（每杆清空） */
+  const calledPocket = ref<number | null>(null)
+  // 本杆物理过程跟踪（不需要响应式）
+  let firstContactSeq: number | null = null
+  let railAfterContact = false
+  let railedObjectBalls = new Set<number>()
+  let eightBallPocket: number | null = null
+  let shotCalledPocket: number | null = null
   const turnResult = ref<TurnResult | null>(null)
   const foulMessage = ref<string | null>(null)
 
@@ -226,6 +234,7 @@ export const useGameStore = defineStore('game', () => {
     switch (msg.type) {
       case 'shoot':
         // 对手击球 — 用相同参数在本地执行物理
+        calledPocket.value = msg.calledPocket ?? null
         localShoot(msg.power, msg.angle, msg.spinX ?? 0, msg.spinY ?? 0)
         break
 
@@ -273,6 +282,7 @@ export const useGameStore = defineStore('game', () => {
         angle,
         spinX,
         spinY,
+        calledPocket: calledPocket.value,
         timestamp: Date.now(),
       })
     }
@@ -289,6 +299,11 @@ export const useGameStore = defineStore('game', () => {
     phase.value = GP.BALLS_MOVING
     firstHitBallThisTurn.value = null
     pocketedThisTurn.value = []
+    firstContactSeq = null
+    railAfterContact = false
+    railedObjectBalls = new Set()
+    eightBallPocket = null
+    shotCalledPocket = calledPocket.value
   }
 
   /**
@@ -312,21 +327,29 @@ export const useGameStore = defineStore('game', () => {
   function stepPhysics(): void {
     physicsWorld.step()
 
-    // 追踪第一个碰撞的球
+    // 追踪白球第一次碰到的球
     if (firstHitBallThisTurn.value === null) {
       for (const event of physicsWorld.collisionEventsThisFrame) {
-        if (event.ball1.isCue) {
-          firstHitBallThisTurn.value = event.ball2.number
-          break
-        } else if (event.ball2.isCue) {
-          firstHitBallThisTurn.value = event.ball1.number
+        const other = event.ball1.isCue ? event.ball2 : event.ball2.isCue ? event.ball1 : null
+        if (other) {
+          firstHitBallThisTurn.value = other.number
+          firstContactSeq = event.seq
           break
         }
       }
     }
 
+    // 追踪碰库：首次碰球之后的任意碰库，以及碰过库的目标球
+    for (const event of physicsWorld.cushionEventsThisFrame) {
+      if (firstContactSeq !== null && event.seq > firstContactSeq) railAfterContact = true
+      if (!event.ball.isCue) railedObjectBalls.add(event.ball.number)
+    }
+
     // 追踪进袋球
     pocketedThisTurn.value.push(...physicsWorld.pocketedBallsThisFrame)
+    for (const event of physicsWorld.pocketEventsThisFrame) {
+      if (event.ball.isEight) eightBallPocket = event.pocketIndex
+    }
 
     // 所有球停止 → 进入回合结束判定
     if (physicsWorld.allBallsStopped) {
@@ -339,12 +362,21 @@ export const useGameStore = defineStore('game', () => {
     const breakShot = isBreakShot.value
     isBreakShot.value = false
 
+    const shot: ShotInfo = {
+      isBreakShot: breakShot,
+      railAfterContact,
+      objectBallsRailed: railedObjectBalls.size,
+      eightBallPocket,
+      calledPocket: shotCalledPocket,
+    }
+
     // 计算回合结果
     const result = ruleEngine.evaluateTurn(
       physicsWorld.balls,
       pocketedThisTurn.value,
       firstHitBallThisTurn.value,
       currentPlayer(),
+      shot,
     )
     turnResult.value = result
 
@@ -381,7 +413,7 @@ export const useGameStore = defineStore('game', () => {
 
     // 检查胜负
     const winResult = ruleEngine.checkWin(
-      physicsWorld.balls, currentPlayer(), otherPlayer(), result
+      physicsWorld.balls, currentPlayer(), otherPlayer(), result, shot
     )
     if (winResult) {
       winner.value = winResult.winner
@@ -413,6 +445,7 @@ export const useGameStore = defineStore('game', () => {
 
   /** 进入下一阶段并清理本回合数据 */
   function finishTurn(nextPhase: GP): void {
+    calledPocket.value = null
     turnCount.value++
     phase.value = nextPhase
     broadcastOnlineState()
@@ -520,11 +553,23 @@ export const useGameStore = defineStore('game', () => {
     return success
   }
 
-  /** 白球能否放在该位置（台面内、不在袋口、不与其他球重叠） */
+  /** 白球能否放在该位置（台面内、不在袋口、不与其他球重叠；开球时须在开球线后） */
   function isValidCueBallPosition(position: Vector2): boolean {
     const cueBall = physicsWorld.balls.find(b => b.isCue)
+    if (phase.value === GP.BREAK_SHOT && position.x > BREAK_LINE_X) return false
     return physicsWorld.isInsideTable(position)
       && !physicsWorld.isPositionOverlap(position, cueBall)
+  }
+
+  /** 指定8号球袋口（仅本组清完、轮到自己瞄准时有效） */
+  function callPocket(pocketIndex: number | null): void {
+    if (isOnlineMode.value && !isMyTurn()) return
+    calledPocket.value = pocketIndex
+  }
+
+  /** 当前玩家是否需要先指定袋口才能击球 */
+  function needsCalledPocket(): boolean {
+    return ruleEngine.needsCalledPocket(physicsWorld.balls, currentPlayer())
   }
 
   /** 本地放置白球 */
@@ -534,8 +579,11 @@ export const useGameStore = defineStore('game', () => {
     if (!isValidCueBallPosition(position)) return false
 
     cueBall.place(position)
-    foulMessage.value = null
-    phase.value = GP.AIMING
+    // 开球前在开球区摆放白球不改变阶段
+    if (phase.value !== GP.BREAK_SHOT) {
+      foulMessage.value = null
+      phase.value = GP.AIMING
+    }
     return true
   }
 
@@ -543,7 +591,7 @@ export const useGameStore = defineStore('game', () => {
     // 状态
     phase, players, currentPlayerIndex, turnCount,
     groupsAssigned, winner, winReason,
-    foulMessage, aimAngle, shotPower,
+    foulMessage, aimAngle, shotPower, calledPocket,
     // 在线模式状态
     isOnlineMode, myPlayerIndex, networkStatus,
     opponentDisconnected, rematchRequested, opponentRequestedRematch,
@@ -551,6 +599,7 @@ export const useGameStore = defineStore('game', () => {
     physicsWorld, ruleEngine,
     // 方法
     initGame, shoot, update, placeCueBall, isValidCueBallPosition,
+    callPocket, needsCalledPocket,
     currentPlayer, otherPlayer,
     firstHitBallThisTurn,
     // 在线模式方法

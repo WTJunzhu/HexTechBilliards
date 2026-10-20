@@ -162,6 +162,8 @@ export interface ShootMessage {
   /** 击球点偏移（-1~1），旧版本客户端不发送时视为中杆 */
   spinX?: number
   spinY?: number
+  /** 打8号球时指定的袋口索引 */
+  calledPocket?: number | null
   timestamp: number
 }
 

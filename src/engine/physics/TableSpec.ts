@@ -21,6 +21,9 @@ const BALL_RADIUS_MM = 57.15 / 2
 export const TABLE_WIDTH = 2540 / BALL_RADIUS_MM
 export const TABLE_HEIGHT = 1270 / BALL_RADIUS_MM
 
+// 开球线：球桌左侧 1/4 处，开球时白球须放在开球线及其左侧
+export const BREAK_LINE_X = TABLE_WIDTH * 0.25
+
 // 库边（cushion + 木框）绘制宽度
 export const CUSHION_WIDTH = 3.5
 

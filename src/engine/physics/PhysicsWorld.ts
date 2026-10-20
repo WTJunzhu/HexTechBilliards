@@ -40,8 +40,16 @@ export class PhysicsWorld {
   /** 本帧进袋的球 */
   public pocketedBallsThisFrame: Ball[] = []
 
-  /** 本帧碰撞事件 */
-  public collisionEventsThisFrame: { ball1: Ball; ball2: Ball }[] = []
+  /** 本帧进袋事件（含袋口索引，用于指袋判定） */
+  public pocketEventsThisFrame: { ball: Ball; pocketIndex: number }[] = []
+
+  /**
+   * 本帧碰撞 / 碰库事件。seq 为全局递增的事件序号，
+   * 规则判定靠它区分"首次碰球之后"是否有球碰库
+   */
+  public collisionEventsThisFrame: { ball1: Ball; ball2: Ball; seq: number }[] = []
+  public cushionEventsThisFrame: { ball: Ball; seq: number }[] = []
+  private eventSeq = 0
 
   constructor() {}
 
@@ -73,7 +81,9 @@ export class PhysicsWorld {
   /** 物理步进 - 每个固定时间步调用一次 */
   step(dt: number = PHYSICS_DT): void {
     this.pocketedBallsThisFrame = []
+    this.pocketEventsThisFrame = []
     this.collisionEventsThisFrame = []
+    this.cushionEventsThisFrame = []
 
     // 子步数按最快球的位移决定，保证每个子步位移不超过 MAX_SUBSTEP_TRAVEL
     const maxSpeed = Math.max(0, ...this.balls.filter(b => b.active).map(b => b.velocity.length))
@@ -117,6 +127,7 @@ export class PhysicsWorld {
 
       ball.pocket()
       this.pocketedBallsThisFrame.push(ball)
+      this.pocketEventsThisFrame.push({ ball, pocketIndex })
       for (const hook of this.pocketHooks) {
         hook(ball, pocketIndex)
       }
@@ -215,7 +226,7 @@ export class PhysicsWorld {
       e => (e.ball1 === ball1 && e.ball2 === ball2) || (e.ball1 === ball2 && e.ball2 === ball1)
     )
     if (!alreadyRecorded) {
-      this.collisionEventsThisFrame.push({ ball1, ball2 })
+      this.collisionEventsThisFrame.push({ ball1, ball2, seq: ++this.eventSeq })
     }
 
     // 触发碰撞后Hook
@@ -257,6 +268,7 @@ export class PhysicsWorld {
     }
 
     if (collided) {
+      this.cushionEventsThisFrame.push({ ball, seq: ++this.eventSeq })
       for (const hook of this.cushionHooks) {
         hook(ball)
       }
