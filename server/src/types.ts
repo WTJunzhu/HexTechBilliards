@@ -159,6 +159,9 @@ export interface ShootMessage {
   type: 'shoot'
   power: number
   angle: number
+  /** 击球点偏移（-1~1），旧版本客户端不发送时视为中杆 */
+  spinX?: number
+  spinY?: number
   timestamp: number
 }
 
@@ -202,6 +205,8 @@ export interface GameSnapshotMessage {
     number: number
     position: { x: number; y: number }
     velocity: { x: number; y: number }
+    rollSpin?: { x: number; y: number }
+    sideSpin?: number
     state: 'active' | 'pocketed' | 'placing'
   }>
 }

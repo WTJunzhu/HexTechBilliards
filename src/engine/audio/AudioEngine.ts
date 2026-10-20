@@ -22,7 +22,8 @@ export class AudioEngine {
   }
 
   playCueShot(power: number): void {
-    const volume = 0.035 + Math.min(power / MAX_SHOT_POWER, 1) * 0.075
+    // 力度曲线末段增长很快，开平方让普通击球也有足够音量
+    const volume = 0.035 + Math.sqrt(Math.min(power / MAX_SHOT_POWER, 1)) * 0.075
     this.playTone(150, 0.045, volume, 'triangle', 0.65)
   }
 
@@ -32,7 +33,7 @@ export class AudioEngine {
     this.lastCollisionAt = now
 
     // 相对速度归一化到满力初速度（0~1）
-    const impact = ball1.velocity.subtract(ball2.velocity).length / MAX_SHOT_POWER
+    const impact = Math.sqrt(ball1.velocity.subtract(ball2.velocity).length / MAX_SHOT_POWER)
     const volume = Math.min(0.065, 0.012 + impact * 0.06)
     this.playTone(410 + Math.min(impact * 360, 260), 0.035, volume, 'square', 0.45)
   }

@@ -1,5 +1,5 @@
 import { Vector2 } from '../physics/Vector2'
-import { MAX_SHOT_POWER } from '../physics/TableSpec'
+import { shotSpeed } from '../physics/TableSpec'
 
 /**
  * 球杆控制器 - 管理瞄准、蓄力和击球
@@ -15,6 +15,10 @@ export class CueController {
 
   /** 当前力度 (0-1) */
   public power: number = 0
+
+  /** 击球点偏移（-1~1，相对最大塞位）：x 右为正，y 高杆为正 */
+  public spinX = 0
+  public spinY = 0
 
   /** 是否正在蓄力 */
   public isPowering = false
@@ -35,7 +39,7 @@ export class CueController {
   private tableDrag: { startPixel: Vector2; lastGame: Vector2; dragging: boolean } | null = null
 
   /** 回调：击球 */
-  public onShoot: ((power: number, angle: number) => void) | null = null
+  public onShoot: ((power: number, angle: number, spinX: number, spinY: number) => void) | null = null
 
   setCueBallPosition(pos: Vector2): void {
     this.cueBallPosition = pos
@@ -90,6 +94,16 @@ export class CueController {
     this.rotate(deltaPixels * CueController.FINE_TUNE_RAD_PER_PX)
   }
 
+  // ==================== 加塞 ====================
+
+  /** 设置击球点，超出圆形塞位范围时收回到边缘 */
+  setSpin(x: number, y: number): void {
+    const length = Math.hypot(x, y)
+    const scale = length > 1 ? 1 / length : 1
+    this.spinX = x * scale
+    this.spinY = y * scale
+  }
+
   // ==================== 蓄力 ====================
 
   startPower(): void {
@@ -106,7 +120,7 @@ export class CueController {
   releasePower(): boolean {
     const shot = this.isPowering && this.power >= CueController.MIN_SHOT_POWER
     if (shot) {
-      this.onShoot?.(this.power * MAX_SHOT_POWER, this.aimAngle)
+      this.onShoot?.(shotSpeed(this.power), this.aimAngle, this.spinX, this.spinY)
     }
     this.cancelPower()
     return shot

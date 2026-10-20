@@ -53,6 +53,10 @@
     <view class="bottom-panel">
       <!-- 瞄准操作：微调条 + 力度条 -->
       <view class="aim-controls" v-if="showAimControls">
+        <view class="spin-picker" ref="spinPicker"
+          @touchstart.stop.prevent="onSpinStart" @mousedown.stop.prevent="onSpinStart">
+          <view class="spin-dot" :style="spinDotStyle"></view>
+        </view>
         <view class="fine-tune" @touchstart.stop.prevent="onFineTuneStart" @mousedown.stop.prevent="onFineTuneStart">
           <view class="fine-tune-ticks" :style="{ backgroundPosition: fineTuneOffset + 'px 0' }"></view>
           <text class="control-label">◀ 微调 ▶</text>
@@ -159,6 +163,8 @@ const audioEngine = new AudioEngine()
 const powerPercent = ref(0)
 const fineTuneOffset = ref(0)
 const powering = ref(false)
+const spin = ref({ x: 0, y: 0 })
+const spinPicker = ref<{ $el?: HTMLElement } | HTMLElement | null>(null)
 const placementValid = ref(false)
 const showTurnHandoff = ref(false)
 const canvasWrapper = ref<HTMLElement | null>(null)
@@ -171,8 +177,9 @@ let ctx: CanvasRenderingContext2D | null = null
 let logicalWidth = 0
 let logicalHeight = 0
 
-/** 当前进行中的拖动操作（桌面瞄准 / 摆放白球 / 微调 / 蓄力） */
-let activeDrag: 'table' | 'place' | 'fineTune' | 'power' | null = null
+/** 当前进行中的拖动操作（桌面瞄准 / 摆放白球 / 微调 / 蓄力 / 选击球点） */
+let activeDrag: 'table' | 'place' | 'fineTune' | 'power' | 'spin' | null = null
+let spinPickerRect: DOMRect | null = null
 let dragLastPixel = Vector2.zero
 let powerTrackRect: DOMRect | null = null
 
@@ -201,6 +208,12 @@ const powerLabel = computed(() => {
   if (powerPercent.value < CueController.MIN_SHOT_POWER * 100) return '松手取消'
   return `力度 ${Math.round(powerPercent.value)}%`
 })
+
+/** 击球点红点位置：圆心为中杆，向上高杆、向下低杆 */
+const spinDotStyle = computed(() => ({
+  left: `${50 + spin.value.x * 40}%`,
+  top: `${50 - spin.value.y * 40}%`,
+}))
 
 const networkStatusText = computed(() => {
   switch (networkStatus.value) {
@@ -321,11 +334,11 @@ function createCanvas() {
   canvasEl.addEventListener('touchstart', onCanvasTouchStart, { passive: false })
 
   // 击球回调
-  cueController.onShoot = (power, angle) => {
+  cueController.onShoot = (power, angle, spinX, spinY) => {
     if (!canAct.value || !isAimPhase.value) return
     renderer.startShootAnimation()
     audioEngine.playCueShot(power)
-    gameStore.shoot(power, angle)
+    gameStore.shoot(power, angle, spinX, spinY)
   }
 }
 
@@ -363,6 +376,9 @@ function enterPhase() {
   powering.value = false
   powerPercent.value = 0
   renderer.placementPreview = null
+  // 每杆开始时击球点回到中杆
+  cueController.setSpin(0, 0)
+  spin.value = { x: 0, y: 0 }
 
   const cueBall = gameStore.physicsWorld.balls.find(b => b.isCue)
   if (!cueBall) return
@@ -461,6 +477,27 @@ function onFineTuneStart(e: TouchEvent | MouseEvent) {
   dragLastPixel = eventClientPoint(e)
 }
 
+function onSpinStart(e: TouchEvent | MouseEvent) {
+  void audioEngine.unlock()
+  if (!showAimControls.value || activeDrag) return
+  const picker = spinPicker.value
+  const el = (picker && '$el' in picker ? picker.$el : picker) as HTMLElement | null
+  spinPickerRect = el?.getBoundingClientRect() ?? null
+  activeDrag = 'spin'
+  updateSpin(eventClientPoint(e))
+}
+
+/** 按手指在击球点选择器中的位置设置塞 */
+function updateSpin(client: Vector2) {
+  const rect = spinPickerRect
+  if (!rect) return
+  const radius = rect.width * 0.4
+  const x = (client.x - (rect.left + rect.width / 2)) / radius
+  const y = -(client.y - (rect.top + rect.height / 2)) / radius
+  cueController.setSpin(x, y)
+  spin.value = { x: cueController.spinX, y: cueController.spinY }
+}
+
 function onPowerStart(e: TouchEvent | MouseEvent) {
   void audioEngine.unlock()
   if (!showAimControls.value || activeDrag) return
@@ -496,6 +533,9 @@ function handleDragMove(client: Vector2, canvasPixel: Vector2 | null) {
       dragLastPixel = client
       break
     }
+    case 'spin':
+      updateSpin(client)
+      break
     case 'power': {
       // 从按下位置向右拖，拖满力度条宽度 = 满力；拖回起点 = 取消
       const width = Math.max(powerTrackRect?.width ?? 200, 1)
@@ -702,6 +742,28 @@ function goHome() {
   background-color: rgba(20, 20, 40, 0.95);
   border-top: 1rpx solid rgba(100, 100, 255, 0.15);
   padding: 6rpx 20rpx calc(10rpx + env(safe-area-inset-bottom));
+}
+
+/* 击球点选择器：白球示意图，红点为杆头击球位置 */
+.spin-picker {
+  position: relative;
+  flex-shrink: 0;
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #ffffff, #d8d8e0 70%, #a0a0b0);
+  touch-action: none;
+}
+
+.spin-dot {
+  position: absolute;
+  width: 14rpx;
+  height: 14rpx;
+  margin: -7rpx 0 0 -7rpx;
+  border-radius: 50%;
+  background-color: #e53935;
+  box-shadow: 0 0 4rpx rgba(0, 0, 0, 0.5);
+  pointer-events: none;
 }
 
 /* 瞄准操作区：微调条 + 力度条 */

@@ -1,9 +1,9 @@
-import type { Vector2 } from './Vector2'
+import { Vector2 } from './Vector2'
 import type { Ball } from './Ball'
 import {
   TABLE_WIDTH, TABLE_HEIGHT, CUSHION_WIDTH,
   POCKETS, CUSHION_SEGMENTS, closestPointOnSegment,
-  BALL_RESTITUTION, CUSHION_RESTITUTION, BALL_DIAMETER, BALL_RADIUS,
+  BALL_RESTITUTION, CUSHION_RESTITUTION, CUSHION_FRICTION, BALL_DIAMETER, BALL_RADIUS,
   PHYSICS_DT, MAX_SUBSTEP_TRAVEL,
 } from './TableSpec'
 
@@ -251,7 +251,7 @@ export class PhysicsWorld {
 
       const normalSpeed = ball.velocity.dot(normal)
       if (normalSpeed < 0) {
-        ball.velocity = ball.velocity.subtract(normal.multiply((1 + CUSHION_RESTITUTION) * normalSpeed))
+        this.applyCushionImpulse(ball, normal, normalSpeed)
         collided = true
       }
     }
@@ -261,6 +261,31 @@ export class PhysicsWorld {
         hook(ball)
       }
     }
+  }
+
+  /**
+   * 撞库冲量
+   * - 法向：速度按恢复系数反弹；滚动旋转的法向分量同样反向（简化处理，
+   *   否则每次撞库后球都会因旋转方向与速度相反而大幅减速）
+   * - 切向：接触点沿库边打滑时受库边摩擦（不超过 μ·法向冲量），
+   *   摩擦同时改变球速和侧旋，这就是侧塞改变反弹角的来源
+   */
+  private applyCushionImpulse(ball: Ball, normal: Vector2, normalSpeed: number): void {
+    const normalImpulse = -(1 + CUSHION_RESTITUTION) * normalSpeed
+    ball.velocity = ball.velocity.add(normal.multiply(normalImpulse))
+    const spinNormal = ball.rollSpin.dot(normal)
+    if (spinNormal < 0) {
+      ball.rollSpin = ball.rollSpin.add(normal.multiply(-(1 + CUSHION_RESTITUTION) * spinNormal))
+    }
+
+    // 接触点在 -R·normal 处，侧旋贡献的接触点速度为 sideSpin·(ny, -nx)
+    const spinAxis = new Vector2(normal.y, -normal.x)
+    const slip = ball.velocity.dot(spinAxis) + ball.sideSpin
+    if (slip === 0) return
+    // 实心球：切向冲量 J 使接触点滑移改变 3.5·J，使侧旋改变 2.5·J
+    const frictionImpulse = Math.min(Math.abs(slip) / 3.5, CUSHION_FRICTION * normalImpulse) * Math.sign(slip)
+    ball.velocity = ball.velocity.subtract(spinAxis.multiply(frictionImpulse))
+    ball.sideSpin -= 2.5 * frictionImpulse
   }
 
   // ==================== 工具方法 ====================

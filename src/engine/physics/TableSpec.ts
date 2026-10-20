@@ -111,17 +111,36 @@ export function closestPointOnSegment(p: Vector2, a: Vector2, b: Vector2): Vecto
 // 物理以固定步长推进，与屏幕刷新率无关
 export const PHYSICS_DT = 1 / 120
 
-// 台面摩擦：减速度 = ROLLING_DECEL + LINEAR_DRAG × 速度
-// 恒定部分模拟滚动摩擦，让球干脆地停下；线性部分让高速球衰减更快
-// 标定（不计库边损耗）：满力≈3.9个台长，50%≈1.4个台长，25%≈半张台，10%≈1.7个球径，满力约5.7秒停球
+// 滑动摩擦减速度（μs·g）。球打滑时（刚出杆、低/高杆、碰撞后）受此摩擦，远大于滚动阻力
+export const SLIDING_DECEL = 20
+// 侧旋在台面上的衰减速率（速度单位/秒）
+export const SIDE_SPIN_DECEL = 6
+// 最大塞位：杆头最远可偏离球心半个半径，超出容易滑杆
+export const MAX_TIP_OFFSET = 0.5
+// 库边与球之间的摩擦系数，决定侧旋撞库时改变反弹角的程度
+export const CUSHION_FRICTION = 0.08
+
+// 滚动阻力：减速度 = ROLLING_DECEL + LINEAR_DRAG × 速度
+// 恒定部分让球干脆地停下；线性部分让高速球衰减更快
+// 标定（含库边损耗，配合 shotSpeed 力度曲线）：10%≈1.6个球径，25%≈半张台，
+// 50%≈1.4个台长，75%≈3个台长，满力≈5个台长、约5秒停球；满力开球平均进约1颗球
 export const ROLLING_DECEL = 5
-export const LINEAR_DRAG = 0.25
+export const LINEAR_DRAG = 0.35
 
 // 恢复系数：只作用于碰撞法向速度，切向速度保留
 export const BALL_RESTITUTION = 0.95     // 球-球
 export const CUSHION_RESTITUTION = 0.8   // 球-库边（真实约 0.75～0.85）
 export const MIN_VELOCITY = 0.05    // 停止判定阈值
-export const MAX_SHOT_POWER = 64    // 满力击球初速度
+export const MAX_SHOT_POWER = 200   // 满力击球初速度（开球级别）
+
+// 力度曲线的线性占比：力度条前段近似线性，便于控制普通击球；末段快速增长到开球力度
+export const POWER_CURVE_LINEAR = 0.4
+
+/** 力度条比例 (0-1) → 出杆速度 */
+export function shotSpeed(power: number): number {
+  const p = Math.max(0, Math.min(power, 1))
+  return MAX_SHOT_POWER * (POWER_CURVE_LINEAR * p + (1 - POWER_CURVE_LINEAR) * p ** 4)
+}
 
 // 每个子步内球的最大位移，防止高速球穿过其他球
 export const MAX_SUBSTEP_TRAVEL = 0.5

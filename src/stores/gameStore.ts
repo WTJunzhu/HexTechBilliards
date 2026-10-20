@@ -227,7 +227,7 @@ export const useGameStore = defineStore('game', () => {
     switch (msg.type) {
       case 'shoot':
         // 对手击球 — 用相同参数在本地执行物理
-        localShoot(msg.power, msg.angle)
+        localShoot(msg.power, msg.angle, msg.spinX ?? 0, msg.spinY ?? 0)
         break
 
       case 'place_cue_ball':
@@ -262,7 +262,7 @@ export const useGameStore = defineStore('game', () => {
   }
 
   /** 击球（统一入口） */
-  function shoot(power: number, angle: number): void {
+  function shoot(power: number, angle: number, spinX = 0, spinY = 0): void {
     // 在线模式下，只有轮到我才能击球
     if (isOnlineMode.value && !isMyTurn()) return
 
@@ -272,19 +272,21 @@ export const useGameStore = defineStore('game', () => {
         type: 'shoot',
         power,
         angle,
+        spinX,
+        spinY,
         timestamp: Date.now(),
       })
     }
 
-    localShoot(power, angle)
+    localShoot(power, angle, spinX, spinY)
   }
 
   /** 本地执行击球 */
-  function localShoot(power: number, angle: number): void {
+  function localShoot(power: number, angle: number, spinX = 0, spinY = 0): void {
     const cueBall = physicsWorld.balls.find(b => b.isCue && b.active)
     if (!cueBall) return
 
-    cueBall.shoot(power, angle)
+    cueBall.shoot(power, angle, spinX, spinY)
     phase.value = GP.BALLS_MOVING
     firstHitBallThisTurn.value = null
     pocketedThisTurn.value = []
@@ -463,6 +465,8 @@ export const useGameStore = defineStore('game', () => {
         number: ball.number,
         position: { x: ball.position.x, y: ball.position.y },
         velocity: { x: ball.velocity.x, y: ball.velocity.y },
+        rollSpin: { x: ball.rollSpin.x, y: ball.rollSpin.y },
+        sideSpin: ball.sideSpin,
         state: ball.state,
       })),
     }
@@ -476,6 +480,8 @@ export const useGameStore = defineStore('game', () => {
       if (!ball) continue
       ball.position = new Vector2(snapshotBall.position.x, snapshotBall.position.y)
       ball.velocity = new Vector2(snapshotBall.velocity.x, snapshotBall.velocity.y)
+      ball.rollSpin = snapshotBall.rollSpin ? new Vector2(snapshotBall.rollSpin.x, snapshotBall.rollSpin.y) : Vector2.zero
+      ball.sideSpin = snapshotBall.sideSpin ?? 0
       ball.state = snapshotBall.state as BallState
     }
 
