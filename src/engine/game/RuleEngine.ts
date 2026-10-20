@@ -13,9 +13,9 @@ import {
  * 关键规则：
  * 1. 开球进球不决定球组归属
  * 2. 开球后第一个合法进球决定球组
- * 3. 犯规后对手获得全桌自由球
+ * 3. 任何犯规后对手获得全桌自由球
  * 4. 打8号球犯规直接判负
- * 5. 8号球进错袋判负
+ * 5. 开球打进8号球重新摆球开球
  */
 export class RuleEngine {
   /**
@@ -26,8 +26,6 @@ export class RuleEngine {
     pocketedBallsThisFrame: Ball[],
     firstHitBall: number | null,
     currentPlayer: Player,
-    otherPlayer: Player,
-    isBreakShot: boolean,
   ): TurnResult {
     const result: TurnResult = {
       pocketedBalls: [],
@@ -37,60 +35,62 @@ export class RuleEngine {
       eightBallPocketed: false,
     }
 
-    // 分类本帧进袋的球
+    // 分类本回合进袋的球
     for (const ball of pocketedBallsThisFrame) {
       result.pocketedBalls.push(ball.number)
-
-      if (isCueBall(ball.number)) {
-        result.cueBallPocketed = true
-        result.foul = true
-        result.foulReason = '白球进袋（犯规）'
-      }
-
-      if (isEightBall(ball.number)) {
-        result.eightBallPocketed = true
-      }
+      if (isCueBall(ball.number)) result.cueBallPocketed = true
+      if (isEightBall(ball.number)) result.eightBallPocketed = true
     }
 
-    // 犯规判定：未碰到任何球
-    if (firstHitBall === null && !isBreakShot) {
+    // 同一杆可能有多种犯规，只提示优先级最高的一条
+    const foulReason = this.findFoul(result, balls, firstHitBall, currentPlayer)
+    if (foulReason) {
       result.foul = true
-      result.foulReason = '未碰到任何球（犯规）'
-    }
-
-    // 犯规判定：球组已分配后，第一个碰到的不是己方球
-    if (firstHitBall !== null && currentPlayer.group !== BallGroup.NONE) {
-      if (currentPlayer.group === BallGroup.SOLID && !isSolidBall(firstHitBall) && !isEightBall(firstHitBall)) {
-        // 己方全色球未清完前先碰到花色球
-        if (this.countRemainingBalls(balls, BallGroup.SOLID) > 0) {
-          result.foul = true
-          result.foulReason = '先碰到对方球（犯规）'
-        }
-      } else if (currentPlayer.group === BallGroup.STRIPE && !isStripeBall(firstHitBall) && !isEightBall(firstHitBall)) {
-        if (this.countRemainingBalls(balls, BallGroup.STRIPE) > 0) {
-          result.foul = true
-          result.foulReason = '先碰到对方球（犯规）'
-        }
-      }
-    }
-
-    // 8号球进袋判定
-    if (result.eightBallPocketed) {
-      // 如果犯规同时8号进袋，直接判负
-      if (result.foul) {
-        // 已经是犯规了
-      }
-      // 如果己方球未清完就打进8号，判负
-      if (currentPlayer.group !== BallGroup.NONE) {
-        const remaining = this.countRemainingBalls(balls, currentPlayer.group)
-        if (remaining > 0) {
-          result.foul = true
-          result.foulReason = '己方球未清完就打进8号球（犯规）'
-        }
-      }
+      result.foulReason = foulReason
     }
 
     return result
+  }
+
+  /**
+   * 犯规判定，返回犯规原因（无犯规返回 null）
+   *
+   * 首碰规则：
+   * - 未分组：任意全色/花色球均可，先碰8号犯规
+   * - 已分组且本组未清完：必须先碰本组球
+   * - 本组已清完：必须先碰8号球
+   */
+  private findFoul(
+    result: TurnResult,
+    balls: Ball[],
+    firstHitBall: number | null,
+    currentPlayer: Player,
+  ): string | null {
+    if (result.cueBallPocketed) return '白球进袋'
+    if (firstHitBall === null) return '未碰到任何球'
+
+    const group = currentPlayer.group
+    if (group === BallGroup.NONE) {
+      return isEightBall(firstHitBall) ? '未分组时先碰到8号球' : null
+    }
+
+    // 用击球前的剩余数判断：本杆打进本组最后一颗球时，首碰本组球仍然合法
+    const pocketedOwn = result.pocketedBalls.filter(n => this.isGroupBall(n, group)).length
+    const remainingBefore = this.countRemainingBalls(balls, group) + pocketedOwn
+
+    if (remainingBefore > 0) {
+      if (isEightBall(firstHitBall)) return '本组球未清完时先碰到8号球'
+      if (!this.isGroupBall(firstHitBall, group)) return '先碰到对方球'
+    } else if (!isEightBall(firstHitBall)) {
+      return '本组球已清完，须先碰8号球'
+    }
+    return null
+  }
+
+  private isGroupBall(number: number, group: BallGroup): boolean {
+    if (group === BallGroup.SOLID) return isSolidBall(number)
+    if (group === BallGroup.STRIPE) return isStripeBall(number)
+    return false
   }
 
   /**
@@ -127,8 +127,10 @@ export class RuleEngine {
   }
 
   /**
-   * 判定是否获胜
-   * @returns 获胜玩家index，null表示未获胜
+   * 判定是否获胜（仅在8号球进袋时分出胜负）
+   *
+   * 开球打进8号球不在此处理，由调用方重新摆球开球。
+   * @returns 获胜玩家index，null表示未分出胜负
    */
   checkWin(
     balls: Ball[],
@@ -136,33 +138,20 @@ export class RuleEngine {
     otherPlayer: Player,
     turnResult: TurnResult,
   ): { winner: number; reason: string } | null {
-    // 8号球犯规判负（对方获胜）
-    if (turnResult.eightBallPocketed && turnResult.foul) {
-      return { winner: otherPlayer.index, reason: '8号球犯规' }
-    }
+    if (!turnResult.eightBallPocketed) return null
 
-    // 己方球未清完打进8号判负
-    if (turnResult.eightBallPocketed && currentPlayer.group !== BallGroup.NONE) {
-      const remaining = this.countRemainingBalls(balls, currentPlayer.group)
-      if (remaining > 0) {
-        return { winner: otherPlayer.index, reason: '己方球未清完打进8号' }
-      }
-    }
+    const lose = (reason: string) => ({ winner: otherPlayer.index, reason })
 
-    // 白球进袋同时8号球进袋
-    if (turnResult.cueBallPocketed && turnResult.eightBallPocketed) {
-      return { winner: otherPlayer.index, reason: '白球和8号球同时进袋' }
+    if (currentPlayer.group === BallGroup.NONE) {
+      return lose('未分组时打进8号球')
     }
-
-    // 合法打进8号球获胜
-    if (turnResult.eightBallPocketed && !turnResult.foul && currentPlayer.group !== BallGroup.NONE) {
-      const remaining = this.countRemainingBalls(balls, currentPlayer.group)
-      if (remaining === 0) {
-        return { winner: currentPlayer.index, reason: '合法打进8号球获胜' }
-      }
+    if (this.countRemainingBalls(balls, currentPlayer.group) > 0) {
+      return lose('本组球未清完就打进8号球')
     }
-
-    return null
+    if (turnResult.foul) {
+      return lose(`打进8号球时犯规（${turnResult.foulReason}）`)
+    }
+    return { winner: currentPlayer.index, reason: '合法打进8号球获胜' }
   }
 
   /**
@@ -183,26 +172,14 @@ export class RuleEngine {
       return turnResult.pocketedBalls.length === 0
     }
 
-    // 检查是否进了己方球
-    const ownBallPocketed = turnResult.pocketedBalls.some(n => {
-      if (isCueBall(n) || isEightBall(n)) return false
-      if (currentPlayer.group === BallGroup.SOLID) return isSolidBall(n)
-      if (currentPlayer.group === BallGroup.STRIPE) return isStripeBall(n)
-      return false
-    })
-
     // 进了己方球不换手，否则换手
+    const ownBallPocketed = turnResult.pocketedBalls.some(n => this.isGroupBall(n, currentPlayer.group))
     return !ownBallPocketed
   }
 
   /** 计算剩余己方球数量 */
   countRemainingBalls(balls: Ball[], group: BallGroup): number {
-    return balls.filter(ball => {
-      if (!ball.active) return false
-      if (group === BallGroup.SOLID) return isSolidBall(ball.number)
-      if (group === BallGroup.STRIPE) return isStripeBall(ball.number)
-      return false
-    }).length
+    return balls.filter(ball => ball.active && this.isGroupBall(ball.number, group)).length
   }
 
   /** 更新玩家进球计数 */

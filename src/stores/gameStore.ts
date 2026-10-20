@@ -99,6 +99,7 @@ export const useGameStore = defineStore('game', () => {
   const winReason = ref<string | null>(null)
 
   // === 回合跟踪 ===
+  const isBreakShot = ref(true)
   const firstHitBallThisTurn = ref<number | null>(null)
   const pocketedThisTurn = ref<Ball[]>([])
   const turnResult = ref<TurnResult | null>(null)
@@ -143,6 +144,7 @@ export const useGameStore = defineStore('game', () => {
     groupsAssigned.value = false
     winner.value = null
     winReason.value = null
+    isBreakShot.value = true
     firstHitBallThisTurn.value = null
     pocketedThisTurn.value = []
     turnResult.value = null
@@ -305,7 +307,8 @@ export const useGameStore = defineStore('game', () => {
 
   /** 回合结束判定 */
   function endTurn(): void {
-    const isBreakShot = phase.value === GP.BREAK_SHOT || turnCount.value === 0
+    const breakShot = isBreakShot.value
+    isBreakShot.value = false
 
     // 计算回合结果
     const result = ruleEngine.evaluateTurn(
@@ -313,17 +316,27 @@ export const useGameStore = defineStore('game', () => {
       pocketedThisTurn.value,
       firstHitBallThisTurn.value,
       currentPlayer(),
-      otherPlayer(),
-      isBreakShot,
     )
     turnResult.value = result
 
-    // 球组分配（中式八球：第一个合法进球决定球组）
-    if (!groupsAssigned.value && !isBreakShot) {
+    // 开球打进8号球：重新摆球开球；若同时犯规，改由对手开球
+    if (breakShot && result.eightBallPocketed) {
+      physicsWorld.balls = createInitialBalls()
+      if (result.foul) {
+        currentPlayerIndex.value = 1 - currentPlayerIndex.value
+      }
+      isBreakShot.value = true
+      foulMessage.value = `开球打进8号球，重新摆球，由${currentPlayer().name}开球`
+      finishTurn(GP.BREAK_SHOT)
+      return
+    }
+
+    // 球组分配（中式八球：开球后第一个合法进球决定球组）
+    if (!groupsAssigned.value && !breakShot && !result.foul) {
       for (const ball of pocketedThisTurn.value) {
         if (!ball.isCue && !ball.isEight) {
           const assigned = ruleEngine.assignGroups(
-            ball, currentPlayer(), otherPlayer(), isBreakShot
+            ball, currentPlayer(), otherPlayer(), breakShot
           )
           if (assigned) {
             groupsAssigned.value = true
@@ -344,42 +357,36 @@ export const useGameStore = defineStore('game', () => {
     if (winResult) {
       winner.value = winResult.winner
       winReason.value = winResult.reason
-      phase.value = GP.GAME_OVER
-      broadcastOnlineState()
+      finishTurn(GP.GAME_OVER)
       return
     }
 
-    // 白球进袋处理
-    if (result.cueBallPocketed) {
-      const cueBall = physicsWorld.balls.find(b => b.isCue)
-      if (cueBall) {
-        cueBall.state = BallState.PLACING
-      }
-      phase.value = GP.BALL_IN_HAND
-      foulMessage.value = result.foulReason || '犯规！对手自由球'
-      broadcastOnlineState()
-      return
-    }
-
-    // 判定是否换手
-    const shouldSwitch = ruleEngine.shouldSwitchTurn(result, currentPlayer())
-
+    // 犯规：换手，对手获得全台自由球
     if (result.foul) {
-      foulMessage.value = result.foulReason ?? null
-    } else {
-      foulMessage.value = null
+      if (result.cueBallPocketed) {
+        const cueBall = physicsWorld.balls.find(b => b.isCue)
+        if (cueBall) {
+          cueBall.state = BallState.PLACING
+        }
+      }
+      currentPlayerIndex.value = 1 - currentPlayerIndex.value
+      foulMessage.value = `犯规：${result.foulReason}，${currentPlayer().name}获得自由球`
+      finishTurn(GP.BALL_IN_HAND)
+      return
     }
 
-    if (shouldSwitch) {
+    foulMessage.value = null
+    if (ruleEngine.shouldSwitchTurn(result, currentPlayer())) {
       currentPlayerIndex.value = 1 - currentPlayerIndex.value
     }
+    finishTurn(GP.AIMING)
+  }
 
+  /** 进入下一阶段并清理本回合数据 */
+  function finishTurn(nextPhase: GP): void {
     turnCount.value++
-    phase.value = GP.AIMING
-
+    phase.value = nextPhase
     broadcastOnlineState()
-
-    // 清除回合数据
     firstHitBallThisTurn.value = null
     pocketedThisTurn.value = []
   }
@@ -456,6 +463,7 @@ export const useGameStore = defineStore('game', () => {
     winner.value = snapshot.winner
     winReason.value = snapshot.winReason
     phase.value = snapshot.phase as GP
+    isBreakShot.value = snapshot.phase === GP.BREAK_SHOT
     firstHitBallThisTurn.value = null
     pocketedThisTurn.value = []
     foulMessage.value = null
